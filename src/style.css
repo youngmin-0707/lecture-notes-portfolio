@@ -1,0 +1,262 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  line-height: 1.5;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: #f7f7f8;
+  color: #1a1a1a;
+}
+
+.layout {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  background: #1a1a1a;
+  color: #fff;
+}
+
+.app-title {
+  font-weight: 700;
+  font-size: 1.1rem;
+}
+
+.app-nav {
+  display: flex;
+  gap: 1rem;
+}
+
+.nav-link {
+  color: #ccc;
+  text-decoration: none;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+}
+
+.nav-link:hover {
+  color: #fff;
+}
+
+.nav-link--active {
+  color: #fff;
+  background: #333;
+}
+
+.app-main {
+  flex: 1;
+  width: 100%;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 1.5rem 1rem;
+}
+
+.placeholder h1 {
+  font-size: 1.4rem;
+  margin-bottom: 0.5rem;
+}
+
+.status {
+  margin-top: 1rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  font-size: 0.9rem;
+}
+
+.status--loading {
+  background: #eee;
+  color: #555;
+}
+
+.status--ok {
+  background: #e6f7e9;
+  color: #1e7c34;
+}
+
+.status--degraded {
+  background: #fff4e0;
+  color: #8a5a00;
+}
+
+.status--error {
+  background: #fdeaea;
+  color: #b3261e;
+}
+
+@media (max-width: 480px) {
+  .app-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+/* --- T-31: 업로드 드롭존 --- */
+
+.dropzone {
+  margin-top: 0.75rem;
+  padding: 2rem 1rem;
+  border: 2px dashed #bbb;
+  border-radius: 10px;
+  text-align: center;
+  cursor: pointer;
+  background: #fff;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.dropzone:hover,
+.dropzone--dragover {
+  border-color: #4a7dff;
+  background: #f0f4ff;
+}
+
+.dropzone--busy {
+  cursor: not-allowed;
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.dropzone__hint {
+  margin-top: 0.35rem;
+  font-size: 0.8rem;
+  color: #777;
+}
+
+.upload-progress {
+  margin-top: 0.75rem;
+  height: 8px;
+  border-radius: 4px;
+  background: #e5e5e5;
+  overflow: hidden;
+}
+
+.upload-progress__bar {
+  height: 100%;
+  background: #4a7dff;
+  transition: width 0.15s ease;
+}
+
+/* --- T-31: 세션 목록 --- */
+
+.session-list {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.session-card {
+  padding: 0.75rem 1rem;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.session-card__main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.session-card__title {
+  font-weight: 600;
+  color: #1a1a1a;
+  text-decoration: none;
+}
+
+.session-card__title:hover {
+  text-decoration: underline;
+}
+
+.session-card__meta {
+  font-size: 0.8rem;
+  color: #777;
+}
+
+.session-card__preview {
+  margin: 0.4rem 0 0;
+  font-size: 0.85rem;
+  color: #444;
+}
+
+.session-card__hint {
+  margin: 0.4rem 0 0;
+  font-size: 0.8rem;
+  color: #4a7dff;
+}
+
+.empty-state {
+  color: #777;
+  font-size: 0.9rem;
+}
+
+.badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.badge--uploaded {
+  background: #eee;
+  color: #555;
+}
+
+.badge--transcribing,
+.badge--summarizing {
+  background: #fff4e0;
+  color: #8a5a00;
+}
+
+.badge--transcribed {
+  background: #e6f0ff;
+  color: #1e4c9c;
+}
+
+.badge--done {
+  background: #e6f7e9;
+  color: #1e7c34;
+}
+
+.badge--failed {
+  background: #fdeaea;
+  color: #b3261e;
+}
+
+.btn {
+  margin-top: 0.5rem;
+  padding: 0.35rem 0.75rem;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.btn--retry {
+  background: #b3261e;
+  color: #fff;
+}
+
+.btn--retry:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
