@@ -27,12 +27,16 @@ from app.models.enums import SessionSource, SessionStatus
 from app.models.session import Session as SessionModel
 from app.models.summary import Summary
 from app.models.transcript import Transcript
-from app.pipeline.orchestration import run_pipeline_in_background
+from app.pipeline.orchestration import (
+    resummarize_session_in_background,
+    run_pipeline_in_background,
+)
 from app.pipeline.progress import ProgressInfo, get_progress
 from app.schemas.session import (
     ProcessRequest,
     ProcessResponse,
     ProgressResponse,
+    ResummarizeRequest,
     SessionCreateResponse,
     SessionDetailResponse,
     SessionListItemResponse,
@@ -253,6 +257,56 @@ def process_session(
         session_id=session.id,
         status=session.status,
         poll_after_seconds=DEFAULT_POLL_AFTER_SECONDS,
+    )
+
+
+# ⑥ POST /sessions/{id}/summarize 폴링 안내용 간격 — 재요약은 전사 없이 요약만 하므로
+# 전체 파이프라인(process)보다 짧게 안내한다 (§5.3⑥ 예시값).
+RESUMMARIZE_POLL_AFTER_SECONDS = 5
+
+
+@router.post("/sessions/{session_id}/summarize", status_code=202, response_model=ProcessResponse)
+def resummarize_session(
+    session_id: str,
+    db: Annotated[DBSession, Depends(get_db, scope="function")],
+    background_tasks: BackgroundTasks,
+    body: Annotated[ResummarizeRequest | None, Body()] = None,
+) -> ProcessResponse:
+    """요약만 재실행한다 (§5.3⑥, US-17). 기존 전사를 그대로 쓰고 다시 전사하지 않는다.
+
+    `DONE`이든 요약 단계 `FAILED`든 재요청할 수 있다. 새 `summaries` 레코드가 추가되고
+    기존 요약은 그대로 남는다(§2.3 "세션당 여러 건을 허용" — 다른 모델로 재요약해 비교
+    가능).
+    """
+    session = _get_session_or_404(db, session_id)
+
+    has_transcript = (
+        db.execute(select(Transcript.id).where(Transcript.session_id == session.id)).first()
+        is not None
+    )
+    if not has_transcript:
+        raise AppError("TRANSCRIPT_NOT_READY")
+
+    if session.status in _PROCESSING_STATUSES:
+        raise AppError("INVALID_SESSION_STATE")
+
+    request = body or ResummarizeRequest()
+
+    session.status = SessionStatus.SUMMARIZING.value
+    session.error_code = None
+    session.error_message = None
+    db.flush()
+
+    background_tasks.add_task(
+        resummarize_session_in_background,
+        session.id,
+        llm_provider_name=request.llm_provider,
+    )
+
+    return ProcessResponse(
+        session_id=session.id,
+        status=session.status,
+        poll_after_seconds=RESUMMARIZE_POLL_AFTER_SECONDS,
     )
 
 

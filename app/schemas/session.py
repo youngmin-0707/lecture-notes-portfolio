@@ -40,6 +40,12 @@ class ProcessResponse(CamelModel):
     poll_after_seconds: int
 
 
+class ResummarizeRequest(CamelModel):
+    """POST /api/v1/sessions/{id}/summarize 요청 바디 (§5.3⑥). 전부 선택."""
+
+    llm_provider: str | None = None
+
+
 class SummaryKeyPointResponse(CamelModel):
     """§5.3③ `summary.keyPoints[]` 항목."""
 

@@ -101,6 +101,34 @@ def run_pipeline_in_background(
         db.close()
 
 
+def resummarize_session_in_background(
+    session_id: str, *, llm_provider_name: str | None = None
+) -> None:
+    """`BackgroundTasks` 진입점 — 요약만 다시 실행한다 (T-25, US-17, §5.3⑥).
+
+    `run_pipeline_in_background()`와 달리 전사 상태를 전혀 건드리지 않는다. 전사가 이미
+    저장돼 있어야 한다는 전제(§2.4 "재실행" 규칙)는 라우터가 요청을 받는 시점에
+    `TRANSCRIPT_NOT_READY`로 이미 검증했다.
+    """
+    db = SessionLocal()
+    try:
+        session = db.get(Session, session_id)
+        if session is None:
+            logger.warning("resummarize_session_in_background: session not found id=%s", session_id)
+            return
+        llm_provider = build_llm_provider(llm_provider_name)
+        summarize_session(db, session, llm_provider)
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception(
+            "resummarize_session_in_background: unexpected failure, session_id=%s", session_id
+        )
+        _mark_failed_after_crash(session_id)
+    finally:
+        db.close()
+
+
 def _mark_failed_after_crash(session_id: str) -> None:
     recovery_db = SessionLocal()
     try:
