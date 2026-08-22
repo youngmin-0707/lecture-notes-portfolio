@@ -260,3 +260,40 @@ body {
   opacity: 0.6;
   cursor: not-allowed;
 }
+
+/* --- T-32: 브라우저 녹음 --- */
+
+.recorder {
+  margin-top: 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.btn--record {
+  margin-top: 0;
+  background: #1a1a1a;
+  color: #fff;
+  padding: 0.5rem 1rem;
+}
+
+.btn--record.btn--recording {
+  background: #b3261e;
+  animation: pulse 1.5s infinite;
+}
+
+.record-timer {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: #b3261e;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.75;
+  }
+}

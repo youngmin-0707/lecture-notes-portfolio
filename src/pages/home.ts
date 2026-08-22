@@ -36,6 +36,12 @@ let currentGeneration = 0;
 let isUploading = false;
 const retryingIds = new Set<string>();
 
+// --- T-32: 브라우저 녹음(MediaRecorder) 상태 ---
+let mediaRecorder: MediaRecorder | null = null;
+let recordedChunks: Blob[] = [];
+let recordingStartedAt: number | null = null;
+let recordingTimerId: number | null = null;
+
 function formatDuration(seconds: number | null): string {
   if (seconds === null) return "-";
   const totalSeconds = Math.round(seconds);
@@ -56,6 +62,23 @@ function formatDate(iso: string): string {
   } catch {
     return iso;
   }
+}
+
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const secs = totalSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+}
+
+// MediaRecorder가 실제로 사용한 mimeType에서 업로드 파일 확장자를 정한다 — 백엔드는
+// 매직 넘버로 최종 검증하지만(§3.1), 클라이언트 1차 필터(validateFileClientSide)를 통과하려면
+// 파일명 확장자가 §3.1 허용 목록에 든 것이어야 한다.
+function extensionFromMimeType(mimeType: string): string {
+  if (mimeType.includes("mp4")) return "mp4";
+  if (mimeType.includes("ogg")) return "ogg";
+  if (mimeType.includes("wav")) return "wav";
+  return "webm"; // 대부분의 브라우저(Chrome/Firefox) 기본값.
 }
 
 function validateFileClientSide(file: File): string | null {
@@ -195,7 +218,7 @@ async function handleRetry(sessionId: string, generation: number): Promise<void>
 }
 
 async function handleFile(file: File, generation: number): Promise<void> {
-  if (isUploading) return; // 중복 제출 차단 (US-20).
+  if (isUploading || mediaRecorder) return; // 중복 제출 차단 (US-20) + 녹음 중 업로드 방지.
 
   const validationError = validateFileClientSide(file);
   if (validationError) {
@@ -237,6 +260,132 @@ function updateUploadProgress(progress: UploadProgressEvent): void {
   const text = el<"p">("upload-progress-text");
   if (bar) bar.style.width = `${progress.percent}%`;
   if (text) text.textContent = `업로드 중... ${progress.percent}%`;
+}
+
+function setRecordStatus(html: string): void {
+  const target = el("record-status");
+  if (target) target.innerHTML = html;
+}
+
+function updateRecordButtonUi(recording: boolean): void {
+  const button = el<"button">("record-toggle");
+  const timer = el<"span">("record-timer");
+  if (button) {
+    button.textContent = recording ? "⏹ 녹음 종료" : "🎙 녹음 시작";
+    button.classList.toggle("btn--recording", recording);
+  }
+  if (timer) timer.hidden = !recording;
+  setDropzoneBusy(recording); // 녹음 중에는 파일 업로드도 막아 상태가 꼬이지 않게 한다.
+}
+
+function stopRecordTimer(): void {
+  if (recordingTimerId !== null) {
+    window.clearInterval(recordingTimerId);
+    recordingTimerId = null;
+  }
+}
+
+function startRecordTimer(generation: number): void {
+  stopRecordTimer();
+  recordingTimerId = window.setInterval(() => {
+    if (generation !== currentGeneration || recordingStartedAt === null) {
+      stopRecordTimer();
+      return;
+    }
+    const timer = el<"span">("record-timer");
+    if (timer) timer.textContent = formatElapsed(Date.now() - recordingStartedAt);
+  }, 1000);
+}
+
+async function startRecording(generation: number): Promise<void> {
+  if (mediaRecorder || isUploading) return; // 이미 녹음 중이거나 업로드 중이면 무시.
+
+  if (typeof MediaRecorder === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+    setRecordStatus(
+      `<p class="status status--error">이 브라우저는 녹음 기능을 지원하지 않습니다.</p>`,
+    );
+    return;
+  }
+
+  let stream: MediaStream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (error) {
+    // US-19: 마이크 권한 거부 시 정확히 이 문구를 보여준다.
+    const isPermissionDenied =
+      error instanceof DOMException &&
+      (error.name === "NotAllowedError" || error.name === "PermissionDeniedError");
+    setRecordStatus(
+      `<p class="status status--error">${
+        isPermissionDenied ? "마이크 권한이 필요합니다." : "마이크에 접근할 수 없습니다."
+      }</p>`,
+    );
+    return;
+  }
+
+  if (generation !== currentGeneration) {
+    stream.getTracks().forEach((track) => track.stop());
+    return;
+  }
+
+  recordedChunks = [];
+  const recorder = new MediaRecorder(stream);
+  recorder.addEventListener("dataavailable", (event) => {
+    if (event.data.size > 0) recordedChunks.push(event.data);
+  });
+  recorder.addEventListener("stop", () => {
+    stream.getTracks().forEach((track) => track.stop());
+  });
+
+  recorder.start();
+  mediaRecorder = recorder;
+  recordingStartedAt = Date.now();
+  setRecordStatus("");
+  updateRecordButtonUi(true);
+  startRecordTimer(generation);
+}
+
+function stopRecording(generation: number): void {
+  if (!mediaRecorder) return;
+  const recorder = mediaRecorder;
+  const mimeType = recorder.mimeType || "audio/webm";
+  mediaRecorder = null;
+  stopRecordTimer();
+  recordingStartedAt = null;
+  updateRecordButtonUi(false);
+
+  recorder.addEventListener(
+    "stop",
+    () => {
+      void finishRecording(mimeType, generation);
+    },
+    { once: true },
+  );
+  recorder.stop();
+}
+
+async function finishRecording(mimeType: string, generation: number): Promise<void> {
+  const blob = new Blob(recordedChunks, { type: mimeType });
+  recordedChunks = [];
+  if (blob.size === 0) {
+    setRecordStatus(`<p class="status status--error">녹음된 내용이 없습니다.</p>`);
+    return;
+  }
+  const extension = extensionFromMimeType(mimeType);
+  const file = new File([blob], `recording-${Date.now()}.${extension}`, { type: mimeType });
+  await handleFile(file, generation); // 검증·업로드·목록갱신·폴링을 그대로 재사용한다.
+}
+
+function wireRecorder(generation: number): void {
+  const button = el<"button">("record-toggle");
+  if (!button) return;
+  button.addEventListener("click", () => {
+    if (mediaRecorder) {
+      stopRecording(generation);
+    } else {
+      void startRecording(generation);
+    }
+  });
 }
 
 function wireDropzone(generation: number): void {
@@ -306,6 +455,13 @@ export function renderHomePage(): void {
   const generation = ++currentGeneration;
   isUploading = false;
   retryingIds.clear();
+  if (mediaRecorder) {
+    mediaRecorder.stream.getTracks().forEach((track) => track.stop());
+    mediaRecorder = null;
+  }
+  stopRecordTimer();
+  recordingStartedAt = null;
+  recordedChunks = [];
 
   renderShell(
     "home",
@@ -318,6 +474,11 @@ export function renderHomePage(): void {
           <input type="file" id="file-input" accept="audio/*" hidden />
         </div>
         <div id="upload-status"></div>
+        <div class="recorder">
+          <button type="button" id="record-toggle" class="btn btn--record">🎙 녹음 시작</button>
+          <span id="record-timer" class="record-timer" hidden>00:00</span>
+        </div>
+        <div id="record-status"></div>
       </section>
       <section>
         <h2>최근 세션</h2>
@@ -328,6 +489,7 @@ export function renderHomePage(): void {
   );
 
   wireDropzone(generation);
+  wireRecorder(generation);
   wireRetryButtons(generation);
   renderHealthWidget();
 
