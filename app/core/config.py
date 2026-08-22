@@ -63,6 +63,14 @@ class Settings(BaseSettings):
     LLM_MAX_RETRIES: int = 3
     LLM_RETRY_BASE_DELAY_SECONDS: float = 1.0
 
+    # --- map-reduce 긴 전사 요약 (§3.4, T-21) ---
+    # 전사를 이 크기(토큰 근사치) 단위로 나눠 부분 요약 후 합친다. 오버랩을 둬 청크 경계에서
+    # 문맥이 잘려 내용이 통째로 누락되는 것을 막는다.
+    SUMMARY_CHUNK_SIZE_TOKENS: int = 4000
+    SUMMARY_CHUNK_OVERLAP_TOKENS: int = 200
+    # 부분 요약은 순차 호출한다 — 무료 티어 LLM에 병렬로 쏘면 즉시 429이므로 호출 간 간격을 둔다.
+    SUMMARY_MAP_CALL_INTERVAL_SECONDS: float = 1.0
+
     # --- 무료 티어 대안 Provider (§0 D4/D5, 그룹 E/T-29에서 사용) ---
     # 절대 로그/응답에 노출하지 않는다 (§3.4, §6 보안).
     GROQ_API_KEY: SecretStr | None = None

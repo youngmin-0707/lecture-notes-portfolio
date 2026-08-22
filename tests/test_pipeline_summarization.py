@@ -11,11 +11,13 @@ import pytest
 from sqlalchemy import select
 
 from app.core.errors import AppError
+from app.llm.chunking import TimedSegment, chunk_segments
 from app.llm.fake import DEFAULT_VALID_SUMMARY_JSON, FakeLlmProvider, make_summary_json
 from app.models.enums import SessionStatus
+from app.models.glossary import GlossaryTerm
 from app.models.session import Session
 from app.models.summary import Summary
-from app.models.transcript import Transcript
+from app.models.transcript import Transcript, TranscriptSegment
 from app.pipeline import progress as progress_module
 from app.pipeline.summarization import summarize_session
 
@@ -217,6 +219,94 @@ class TestRetryPolicy:
         )
 
         assert sleep_calls == [1.0, 2.0]  # 지수 백오프: 1 * 2^0, 1 * 2^1
+
+
+class TestMapReduceIntegration:
+    """T-21, US-12: 파이프라인 레벨에서 map-reduce가 실제로 트리거되는지 확인한다."""
+
+    def _add_many_segments(self, db_session, transcript: Transcript, count: int = 20) -> None:
+        db_session.add_all(
+            [
+                TranscriptSegment(
+                    transcript_id=transcript.id,
+                    seq=i,
+                    start_seconds=i * 5.0,
+                    end_seconds=i * 5.0 + 4.0,
+                    text=f"문장{i}: " + ("가" * 50),
+                )
+                for i in range(count)
+            ]
+        )
+        db_session.flush()
+
+    def test_long_transcript_with_small_chunk_size_triggers_map_reduce(self, db_session) -> None:
+        session = _make_session()
+        db_session.add(session)
+        db_session.flush()
+        transcript = _add_transcript(db_session, session)
+        self._add_many_segments(db_session, transcript)
+
+        segments = [
+            TimedSegment(start_seconds=s.start_seconds, text=s.text) for s in transcript.segments
+        ]
+        chunk_count = len(chunk_segments(segments, chunk_size_tokens=100, overlap_tokens=20))
+        assert chunk_count >= 3, "테스트 전제: 여러 청크로 쪼개져야 한다"
+
+        responses = [make_summary_json() for _ in range(chunk_count + 1)]
+        provider = FakeLlmProvider(responses=responses)
+
+        result = summarize_session(
+            db_session,
+            session,
+            provider,
+            sleep=_no_sleep,
+            chunk_size_tokens=100,
+            chunk_overlap_tokens=20,
+            map_call_interval_seconds=0.0,
+        )
+
+        assert result.status == SessionStatus.DONE.value
+        assert len(provider.calls) == chunk_count + 1
+        summary = db_session.execute(
+            select(Summary).where(Summary.session_id == session.id)
+        ).scalar_one()
+        assert summary.provider_model == "fake-llm-model"
+
+    def test_short_transcript_with_default_chunk_size_stays_single_shot(self, db_session) -> None:
+        session = _make_session()
+        db_session.add(session)
+        db_session.flush()
+        transcript = _add_transcript(db_session, session)
+        self._add_many_segments(db_session, transcript, count=3)
+
+        provider = FakeLlmProvider()
+        result = summarize_session(db_session, session, provider, sleep=_no_sleep)
+
+        assert result.status == SessionStatus.DONE.value
+        assert len(provider.calls) == 1
+
+    def test_segment_text_corrected_with_glossary_before_summarizing(self, db_session) -> None:
+        session = _make_session()
+        db_session.add(session)
+        db_session.add(GlossaryTerm(term="PostgreSQL", aliases=["포스트그레스큐엘"], course=None))
+        db_session.flush()
+        transcript = _add_transcript(db_session, session)
+        db_session.add(
+            TranscriptSegment(
+                transcript_id=transcript.id,
+                seq=0,
+                start_seconds=0.0,
+                end_seconds=3.0,
+                text="포스트그레스큐엘에서 조인을 하면",
+            )
+        )
+        db_session.flush()
+
+        provider = FakeLlmProvider()
+        summarize_session(db_session, session, provider, sleep=_no_sleep)
+
+        assert "PostgreSQL에서 조인을 하면" in provider.calls[0]
+        assert "포스트그레스큐엘" not in provider.calls[0]
 
 
 class TestTranscriptNotReady:

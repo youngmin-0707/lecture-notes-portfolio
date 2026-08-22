@@ -25,11 +25,12 @@ from sqlalchemy.orm import Session as DBSession
 
 from app.core.config import settings
 from app.core.errors import AppError
+from app.glossary.correction import correct_transcript_text, fetch_applicable_terms
 from app.llm.base import LlmProvider
+from app.llm.chunking import TimedSegment
+from app.llm.map_reduce import summarize_transcript
 from app.llm.parsing import render_markdown
-from app.llm.prompt import build_summary_prompt
 from app.llm.schema import ParsedSummary
-from app.llm.summarizer import generate_structured_summary
 from app.models.enums import SessionStatus
 from app.models.session import Session
 from app.models.summary import Summary
@@ -61,6 +62,30 @@ def _persist_summary(
     return summary
 
 
+def _build_timed_segments(
+    db: DBSession, session: Session, transcript: Transcript
+) -> list[TimedSegment]:
+    """전사 세그먼트를 용어집으로 보정해 `TimedSegment` 목록으로 만든다 (§3.3, §3.4).
+
+    각 세그먼트 텍스트에 T-23 용어 보정을 적용한다 — 저장된 `transcript_segments.text`
+    자체는 원본 그대로 유지하고(T-23 결정 그대로), 요약 프롬프트에 넣을 때만 메모리상에서
+    보정한다. 세그먼트가 하나도 없으면(예: 세그먼트 없이 텍스트만 있는 레거시/테스트 데이터)
+    `text_corrected`/`text_raw`를 0초 시점의 세그먼트 1개로 취급해 폴백한다.
+    """
+    if transcript.segments:
+        glossary_terms = fetch_applicable_terms(db, session.course)
+        return [
+            TimedSegment(
+                start_seconds=segment.start_seconds,
+                text=correct_transcript_text(segment.text, glossary_terms),
+            )
+            for segment in transcript.segments
+        ]
+
+    fallback_text = transcript.text_corrected or transcript.text_raw
+    return [TimedSegment(start_seconds=0.0, text=fallback_text)] if fallback_text else []
+
+
 def summarize_session(
     db: DBSession,
     session: Session,
@@ -69,6 +94,9 @@ def summarize_session(
     max_retries: int | None = None,
     backoff_base_seconds: float | None = None,
     sleep: Callable[[float], None] | None = None,
+    chunk_size_tokens: int | None = None,
+    chunk_overlap_tokens: int | None = None,
+    map_call_interval_seconds: float | None = None,
 ) -> Session:
     """세션 전사를 요약하고 결과를 저장한다.
 
@@ -82,6 +110,12 @@ def summarize_session(
             `settings.LLM_RETRY_BASE_DELAY_SECONDS`.
         sleep: 백오프 대기에 쓸 함수. 테스트에서 실제 대기를 건너뛰려면 `lambda _: None`을
             주입한다. 미지정 시 `time.sleep`.
+        chunk_size_tokens: map-reduce(§3.4, T-21) 청크 크기(토큰 근사치). 미지정 시
+            `settings.SUMMARY_CHUNK_SIZE_TOKENS`.
+        chunk_overlap_tokens: 청크 간 오버랩(토큰 근사치). 미지정 시
+            `settings.SUMMARY_CHUNK_OVERLAP_TOKENS`.
+        map_call_interval_seconds: map 단계 청크 간 호출 간격(초). 미지정 시
+            `settings.SUMMARY_MAP_CALL_INTERVAL_SECONDS`.
 
     Returns:
         갱신된 `session` (`DONE` 또는 `FAILED` 상태). 실패 시에도 예외를 던지지 않고
@@ -105,6 +139,19 @@ def summarize_session(
         else settings.LLM_RETRY_BASE_DELAY_SECONDS
     )
     effective_sleep = sleep if sleep is not None else time.sleep
+    effective_chunk_size_tokens = (
+        chunk_size_tokens if chunk_size_tokens is not None else settings.SUMMARY_CHUNK_SIZE_TOKENS
+    )
+    effective_chunk_overlap_tokens = (
+        chunk_overlap_tokens
+        if chunk_overlap_tokens is not None
+        else settings.SUMMARY_CHUNK_OVERLAP_TOKENS
+    )
+    effective_map_call_interval = (
+        map_call_interval_seconds
+        if map_call_interval_seconds is not None
+        else settings.SUMMARY_MAP_CALL_INTERVAL_SECONDS
+    )
 
     session.status = SessionStatus.SUMMARIZING.value
     session.error_code = None
@@ -112,18 +159,22 @@ def summarize_session(
     db.flush()
     set_progress(session.id, stage=SessionStatus.SUMMARIZING.value, percent=0.0)
 
-    text = transcript.text_corrected or transcript.text_raw
-    prompt = build_summary_prompt(
-        text,
-        title=session.title,
-        course=session.course,
-        duration_seconds=session.duration_seconds,
-    )
+    timed_segments = _build_timed_segments(db, session, transcript)
 
     last_error: AppError | None = None
     for attempt in range(1, effective_max_retries + 1):
         try:
-            parsed = generate_structured_summary(provider, prompt)
+            parsed = summarize_transcript(
+                provider,
+                timed_segments,
+                title=session.title,
+                course=session.course,
+                duration_seconds=session.duration_seconds,
+                chunk_size_tokens=effective_chunk_size_tokens,
+                overlap_tokens=effective_chunk_overlap_tokens,
+                call_interval_seconds=effective_map_call_interval,
+                sleep=effective_sleep,
+            )
         except AppError as exc:
             last_error = exc
             logger.warning(
