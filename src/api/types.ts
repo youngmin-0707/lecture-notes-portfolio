@@ -1,0 +1,271 @@
+// 요구사항 문서 §5 API 설계와 1:1 대응하는 타입 정의.
+// (docs/requirements/stt-transcription.md §5.3 참고)
+
+export type SessionStatus =
+  | "UPLOADED"
+  | "TRANSCRIBING"
+  | "TRANSCRIBED"
+  | "SUMMARIZING"
+  | "DONE"
+  | "FAILED";
+
+export type SessionSource = "UPLOAD" | "RECORD";
+
+export type ProgressStage = "TRANSCRIBING" | "SUMMARIZING";
+
+export type MatchedIn = "TRANSCRIPT" | "SUMMARY";
+
+export type ExportFormat = "md" | "txt" | "srt";
+
+/** §5.1 공통 에러 응답 포맷 */
+export interface ApiErrorDetail {
+  field: string;
+  reason: string;
+  message: string;
+}
+
+export interface ApiErrorBody {
+  error: {
+    code: string;
+    message: string;
+    details?: ApiErrorDetail[];
+  };
+  requestId: string;
+}
+
+/** ① POST /sessions 응답 */
+export interface CreateSessionResponse {
+  sessionId: string;
+  title: string;
+  course: string | null;
+  status: SessionStatus;
+  source: SessionSource;
+  originalFilename: string;
+  fileSizeBytes: number;
+  durationSeconds: number;
+  recordedAt: string;
+  createdAt: string;
+  pollAfterSeconds?: number;
+}
+
+export interface CreateSessionParams {
+  file: File;
+  title?: string;
+  course?: string;
+  autoProcess?: boolean;
+}
+
+/** ② POST /sessions/{id}/process 요청/응답 */
+export interface ProcessSessionRequest {
+  sttModel?: string;
+  llmProvider?: string;
+  skipSummary?: boolean;
+}
+
+export interface ProcessSessionResponse {
+  sessionId: string;
+  status: SessionStatus;
+  pollAfterSeconds: number;
+}
+
+/** ③ GET /sessions/{id} 응답 */
+export interface SessionProgress {
+  stage: ProgressStage;
+  percent: number;
+  etaSeconds: number | null;
+}
+
+export interface SessionTranscriptInfo {
+  available: boolean;
+  provider?: string;
+  providerModel?: string;
+  characterCount?: number;
+  elapsedSeconds?: number;
+}
+
+export interface SummaryKeyPoint {
+  text: string;
+  atSeconds: number;
+}
+
+export interface SummaryConcept {
+  term: string;
+  description: string;
+}
+
+export interface SummaryCodeSnippet {
+  language: string;
+  code: string;
+  description: string;
+}
+
+export interface SummaryActionItem {
+  text: string;
+  dueDate: string | null;
+}
+
+export interface SessionSummaryDetail {
+  summaryId: string;
+  contentMarkdown: string;
+  keyPoints: SummaryKeyPoint[];
+  concepts: SummaryConcept[];
+  codeSnippets: SummaryCodeSnippet[];
+  actionItems: SummaryActionItem[];
+  keywords: string[];
+  provider: string;
+  providerModel: string;
+  createdAt: string;
+}
+
+export interface SessionDetailResponse {
+  sessionId: string;
+  title: string;
+  course: string | null;
+  status: SessionStatus;
+  durationSeconds?: number;
+  recordedAt?: string;
+  progress?: SessionProgress;
+  errorCode?: string;
+  errorMessage?: string;
+  transcript: SessionTranscriptInfo;
+  summary: SessionSummaryDetail | null;
+  pollAfterSeconds?: number;
+}
+
+/** ④ GET /sessions/{id}/transcript 응답 */
+export interface TranscriptSegment {
+  seq: number;
+  startSeconds: number;
+  endSeconds: number;
+  text: string;
+}
+
+export interface TranscriptResponse {
+  sessionId: string;
+  language: string;
+  corrected: boolean;
+  text: string;
+  segments: TranscriptSegment[];
+}
+
+export interface GetTranscriptParams {
+  corrected?: boolean;
+}
+
+/** ⑤ GET /sessions 목록 응답 */
+export interface SessionListItem {
+  sessionId: string;
+  title: string;
+  course: string | null;
+  status: SessionStatus;
+  durationSeconds: number | null;
+  recordedAt: string;
+  summaryPreview: string | null;
+}
+
+export interface SessionListResponse {
+  items: SessionListItem[];
+  page: number;
+  size: number;
+  totalCount: number;
+  totalPages: number;
+}
+
+export interface ListSessionsParams {
+  course?: string;
+  status?: SessionStatus;
+  page?: number;
+  size?: number;
+}
+
+/** ⑥ POST /sessions/{id}/summarize 요청/응답 */
+export interface SummarizeSessionRequest {
+  llmProvider?: string;
+}
+
+export interface SummarizeSessionResponse {
+  sessionId: string;
+  status: SessionStatus;
+  pollAfterSeconds: number;
+}
+
+/** ⑦ GET /sessions/{id}/export 응답 (바이너리) */
+export interface ExportResult {
+  blob: Blob;
+  filename: string;
+  contentType: string;
+}
+
+/** ⑨ GET /search 응답 */
+export interface SearchResultItem {
+  sessionId: string;
+  title: string;
+  course: string | null;
+  recordedAt: string;
+  matchedIn: MatchedIn;
+  snippet: string;
+  atSeconds: number | null;
+}
+
+export interface SearchResponse {
+  query: string;
+  results: SearchResultItem[];
+  totalCount: number;
+}
+
+export interface SearchParams {
+  q: string;
+  course?: string;
+  limit?: number;
+}
+
+/** ⑩ 용어집 */
+export interface GlossaryTerm {
+  id: number;
+  term: string;
+  aliases: string[];
+  course: string | null;
+}
+
+export interface GlossaryListResponse {
+  items: GlossaryTerm[];
+}
+
+export interface CreateGlossaryTermRequest {
+  term: string;
+  aliases: string[];
+  course?: string | null;
+}
+
+export interface ListGlossaryParams {
+  course?: string;
+}
+
+/** ⑪ PATCH /sessions/{id} 요청/응답 (P2, 제목/과목 수정) */
+export interface UpdateSessionRequest {
+  title?: string;
+  course?: string;
+}
+
+/** ⑫ GET /health 응답 */
+export interface HealthCheckItem {
+  ok: boolean;
+  [key: string]: unknown;
+}
+
+export interface HealthResponse {
+  status: "ok" | "degraded";
+  checks: {
+    database: HealthCheckItem;
+    diskFreeBytes: HealthCheckItem & { value?: number };
+    stt: HealthCheckItem & { provider?: string; model?: string; modelCached?: boolean };
+    llm: HealthCheckItem & {
+      provider?: string;
+      model?: string;
+      configured?: boolean;
+      reachable?: boolean;
+    };
+    offlineMode: boolean;
+    bindHost: string;
+  };
+}
