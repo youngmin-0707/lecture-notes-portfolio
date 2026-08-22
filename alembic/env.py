@@ -22,8 +22,14 @@ if not config.get_main_option("sqlalchemy.url"):
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
+#
+# `disable_existing_loggers=False`가 중요하다 — 기본값(True)이면 이 ini에 명시되지 않은
+# 모든 기존 로거(예: 이미 만들어진 `app.pipeline.*` 로거들)를 영구적으로 비활성화한다.
+# 테스트 스위트에서 alembic 커맨드(예: `tests/test_migrations.py`)를 실행하면 이 프로세스
+# 전역 상태가 남아서, 그 이후 실행되는 다른 테스트의 `app.*` 로그가 전부 사라지는 걸
+# 실측으로 확인했다 (T-28, "본문 없이 길이·소요시간은 로깅된다"는 걸 검증하려다 발견).
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # add your model's MetaData object here
 # for 'autogenerate' support
