@@ -22,6 +22,7 @@ from typing import Any
 
 from app.core.config import settings
 from app.core.errors import AppError
+from app.core.fs import ensure_private_dir
 from app.stt.base import ProgressCallback, SttProvider, SttSegment, SttTranscriptionResult
 
 logger = logging.getLogger("app.stt.local_whisper")
@@ -45,7 +46,7 @@ def _load_model(model_size: str, device: str, compute_type: str, download_root: 
         except ImportError as exc:  # pragma: no cover - 의존성 미설치 환경 방어
             raise AppError("STT_MODEL_UNAVAILABLE") from exc
 
-        Path(download_root).mkdir(parents=True, exist_ok=True, mode=0o700)
+        ensure_private_dir(Path(download_root))
 
         logger.info(
             "Loading faster-whisper model (first use): model=%s device=%s compute_type=%s",

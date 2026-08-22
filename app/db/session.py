@@ -17,22 +17,25 @@ from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import settings
+from app.core.fs import ensure_private_dir, ensure_private_file
 
 
 def _is_sqlite(url: str) -> bool:
     return make_url(url).get_backend_name() == "sqlite"
 
 
-def _ensure_sqlite_parent_dir(url: str) -> None:
+def _sqlite_db_path(url: str) -> Path | None:
     database = make_url(url).database
     if not database or database == ":memory:":
-        return
-    Path(database).resolve().parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        return None
+    return Path(database).resolve()
 
 
 def _build_engine(database_url: str) -> Engine:
     if _is_sqlite(database_url):
-        _ensure_sqlite_parent_dir(database_url)
+        db_path = _sqlite_db_path(database_url)
+        if db_path is not None:
+            ensure_private_dir(db_path.parent)
         engine = create_engine(
             database_url,
             future=True,
@@ -44,6 +47,10 @@ def _build_engine(database_url: str) -> Engine:
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.close()
+            # sqlite는 최초 연결 시점에 DB 파일을 만든다 — 그때 이미 파일이 있으므로
+            # 여기서 매 연결마다 0600을 강제한다 (§3.7, T-38에서 0644로 새고 있던 걸 발견).
+            if db_path is not None:
+                ensure_private_file(db_path)
 
         return engine
 

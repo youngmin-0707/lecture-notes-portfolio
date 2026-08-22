@@ -17,6 +17,7 @@ from typing import Protocol
 from app.audio.validation import MAGIC_HEADER_SIZE
 from app.core.config import settings
 from app.core.errors import AppError
+from app.core.fs import ensure_private_dir
 
 # 한 번에 메모리에 올리는 최대 바이트 수. 500MB 파일이라도 이 크기 이상은 절대 한 번에
 # 읽지 않는다 (§3.1, §6 메모리 NFR).
@@ -36,9 +37,7 @@ class SavedUpload:
 
 def check_disk_space(storage_dir: Path) -> None:
     """저장 디렉토리를 준비하고(없으면 소유자 전용 권한으로 생성) 여유 공간을 확인한다."""
-    storage_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    # mkdir의 mode는 umask의 영향을 받을 수 있어 명시적으로 다시 맞춘다 (§3.7).
-    storage_dir.chmod(0o700)
+    ensure_private_dir(storage_dir)
 
     usage = shutil.disk_usage(storage_dir)
     if usage.free < settings.MIN_DISK_FREE_BYTES:

@@ -26,6 +26,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session as DBSession
 
 from app.core.config import settings
+from app.core.fs import ensure_private_dir
 from app.db.session import get_db
 from app.schemas.health import (
     DatabaseCheck,
@@ -56,8 +57,7 @@ def _check_database(db: DBSession) -> DatabaseCheck:
 
 def _check_disk_free_bytes() -> DiskFreeBytesCheck:
     try:
-        storage_dir = Path(settings.AUDIO_STORAGE_DIR)
-        storage_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        storage_dir = ensure_private_dir(settings.AUDIO_STORAGE_DIR)
         free_bytes = shutil.disk_usage(storage_dir).free
     except OSError:
         logger.exception("health check: disk usage lookup failed")
