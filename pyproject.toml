@@ -1,0 +1,20 @@
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = [
+    "B008", # FastAPI의 Depends(...)를 인자 기본값으로 쓰는 관용 패턴
+    "UP042", # str+Enum -> StrEnum 전환은 직렬화 동작이 달라질 수 있어 별도 검토 필요
+]
+
+[tool.pytest.ini_options]
+# backend/ 디렉토리에서 `pytest` 명령만으로 app/, tests/ 패키지를 import할 수 있도록
+# 현재 디렉토리를 sys.path에 추가한다 (pytest >= 7.0 내장 옵션).
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-ra -q --strict-markers"
+markers = [
+    "integration: 실제(테스트) DB가 필요한 통합 테스트",
+]

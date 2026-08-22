@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+.env
+.env.test
+
+# 오디오 원본·전사 텍스트가 로컬을 벗어나면 안 된다 (§3.7 프라이버시). DB/모델 캐시도 gitignore.
+data/
