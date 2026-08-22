@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
+from sqlalchemy import select
 from sqlalchemy.orm import Session as DBSession
 
 from app.audio.storage import delete_stored_file, save_upload_stream
@@ -18,9 +19,21 @@ from app.core.errors import AppError
 from app.db.session import get_db
 from app.models.enums import SessionSource, SessionStatus
 from app.models.session import Session as SessionModel
-from app.schemas.session import SessionCreateResponse
+from app.models.transcript import Transcript
+from app.pipeline.progress import ProgressInfo, get_progress
+from app.schemas.session import (
+    ProgressResponse,
+    SessionCreateResponse,
+    SessionDetailResponse,
+    TranscriptDetailResponse,
+    TranscriptInfoResponse,
+    TranscriptSegmentResponse,
+)
 
 router = APIRouter(tags=["sessions"])
+
+# 처리 중(TRANSCRIBING/SUMMARIZING) 상태에서 진행률 스토어에 값이 없을 때 쓰는 기본값.
+_PROCESSING_STATUSES = {SessionStatus.TRANSCRIBING.value, SessionStatus.SUMMARIZING.value}
 
 # ③ GET /sessions/{id} 폴링 안내용 기본 간격 (§5.3 ①③).
 DEFAULT_POLL_AFTER_SECONDS = 10
@@ -84,4 +97,111 @@ async def create_session(
         recorded_at=session.recorded_at,
         created_at=session.created_at,
         poll_after_seconds=DEFAULT_POLL_AFTER_SECONDS,
+    )
+
+
+def _get_session_or_404(db: DBSession, session_id: str) -> SessionModel:
+    session = db.get(SessionModel, session_id)
+    if session is None:
+        raise AppError("SESSION_NOT_FOUND")
+    return session
+
+
+def _resolve_progress(session: SessionModel) -> ProgressInfo | None:
+    if session.status not in _PROCESSING_STATUSES:
+        return None
+    stored = get_progress(session.id)
+    if stored is not None:
+        return stored
+    # 스토어에 값이 없을 수 있다 (예: 서버 재시작 직후, 또는 상태만 수동으로 맞춘 테스트).
+    return ProgressInfo(stage=session.status, percent=0.0, eta_seconds=None)
+
+
+@router.get("/sessions/{session_id}", response_model=SessionDetailResponse)
+def get_session_detail(
+    session_id: str,
+    db: Annotated[DBSession, Depends(get_db)],
+) -> SessionDetailResponse:
+    """세션 상세 조회 (§5.3③). 처리 실패(FAILED)여도 HTTP 200을 반환한다."""
+    session = _get_session_or_404(db, session_id)
+
+    transcript = db.execute(
+        select(Transcript).where(Transcript.session_id == session.id)
+    ).scalar_one_or_none()
+
+    if transcript is not None:
+        text = transcript.text_corrected or transcript.text_raw
+        transcript_info = TranscriptInfoResponse(
+            available=True,
+            provider=transcript.provider,
+            provider_model=transcript.provider_model,
+            character_count=len(text),
+            elapsed_seconds=transcript.elapsed_seconds,
+        )
+    else:
+        transcript_info = TranscriptInfoResponse(available=False)
+
+    progress = _resolve_progress(session)
+    progress_response = (
+        ProgressResponse(
+            stage=progress.stage, percent=progress.percent, eta_seconds=progress.eta_seconds
+        )
+        if progress is not None
+        else None
+    )
+
+    return SessionDetailResponse(
+        session_id=session.id,
+        title=session.title,
+        course=session.course,
+        status=session.status,
+        duration_seconds=session.duration_seconds,
+        recorded_at=session.recorded_at,
+        error_code=session.error_code,
+        error_message=session.error_message,
+        progress=progress_response,
+        poll_after_seconds=DEFAULT_POLL_AFTER_SECONDS if progress is not None else None,
+        transcript=transcript_info,
+        summary=None,
+    )
+
+
+@router.get("/sessions/{session_id}/transcript", response_model=TranscriptDetailResponse)
+def get_session_transcript(
+    session_id: str,
+    db: Annotated[DBSession, Depends(get_db)],
+    corrected: bool = True,
+) -> TranscriptDetailResponse:
+    """전사 전문 + 세그먼트 조회 (§5.3④, US-04).
+
+    `corrected=true`(기본)를 요청해도 아직 `text_corrected`가 채워지지 않았다면
+    (용어집 보정은 그룹 E/T-23) `text_raw`로 폴백한다.
+    """
+    session = _get_session_or_404(db, session_id)
+
+    transcript = db.execute(
+        select(Transcript).where(Transcript.session_id == session.id)
+    ).scalar_one_or_none()
+    if transcript is None:
+        raise AppError("TRANSCRIPT_NOT_READY")
+
+    used_corrected = corrected and transcript.text_corrected is not None
+    text = transcript.text_corrected if used_corrected else transcript.text_raw
+
+    segments = [
+        TranscriptSegmentResponse(
+            seq=segment.seq,
+            start_seconds=segment.start_seconds,
+            end_seconds=segment.end_seconds,
+            text=segment.text,
+        )
+        for segment in sorted(transcript.segments, key=lambda s: s.seq)
+    ]
+
+    return TranscriptDetailResponse(
+        session_id=session.id,
+        language=transcript.language,
+        corrected=used_corrected,
+        text=text,
+        segments=segments,
     )
