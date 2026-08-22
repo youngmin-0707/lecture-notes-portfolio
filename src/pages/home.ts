@@ -5,11 +5,12 @@ import {
   listSessions,
   processSession,
   type SessionListItem,
-  type SessionStatus,
   type UploadProgressEvent,
 } from "../api/index.ts";
 import { getUserErrorMessage } from "../errors/errorMessages.ts";
 import { el, escapeHtml } from "../utils/dom.ts";
+import { formatDate, formatDuration } from "../utils/format.ts";
+import { PROCESSING_STATUSES, STATUS_LABELS } from "../utils/status.ts";
 import { renderShell } from "./shell.ts";
 
 // §3.1 업로드 검증 규칙과 동일한 허용 형식/용량. 서버가 매직 넘버로 최종 판정하므로
@@ -17,17 +18,7 @@ import { renderShell } from "./shell.ts";
 const ALLOWED_EXTENSIONS = ["mp3", "m4a", "wav", "webm", "ogg", "flac", "mp4", "mpeg"];
 const MAX_UPLOAD_SIZE_BYTES = 500 * 1024 * 1024;
 
-const PROCESSING_STATUSES: SessionStatus[] = ["TRANSCRIBING", "SUMMARIZING"];
 const POLL_INTERVAL_MS = 5000;
-
-const STATUS_LABELS: Record<SessionStatus, string> = {
-  UPLOADED: "업로드됨",
-  TRANSCRIBING: "전사 중",
-  TRANSCRIBED: "전사 완료",
-  SUMMARIZING: "요약 중",
-  DONE: "완료",
-  FAILED: "실패",
-};
 
 // 라우터에 명시적 unmount 훅이 없어서(T-30 스켈레톤), 페이지를 벗어났다가 다시 들어와도
 // 이전 폴링 루프가 계속 도는 걸 막기 위해 "이 렌더가 아직 최신인가"를 세대(generation)로
@@ -42,28 +33,6 @@ let mediaRecorder: MediaRecorder | null = null;
 let recordedChunks: Blob[] = [];
 let recordingStartedAt: number | null = null;
 let recordingTimerId: number | null = null;
-
-function formatDuration(seconds: number | null): string {
-  if (seconds === null) return "-";
-  const totalSeconds = Math.round(seconds);
-  const minutes = Math.floor(totalSeconds / 60);
-  const secs = totalSeconds % 60;
-  return `${minutes}:${String(secs).padStart(2, "0")}`;
-}
-
-function formatDate(iso: string): string {
-  try {
-    return new Date(iso).toLocaleString("ko-KR", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return iso;
-  }
-}
 
 function formatElapsed(ms: number): string {
   const totalSeconds = Math.floor(ms / 1000);

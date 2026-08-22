@@ -426,3 +426,190 @@ body {
     width: 100%;
   }
 }
+
+/* --- T-34: 메타데이터 편집(제목/과목) --- */
+
+.edit-icon-btn {
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 0.9rem;
+  color: #888;
+  vertical-align: middle;
+}
+
+.edit-icon-btn:hover {
+  color: #1a1a1a;
+}
+
+.meta-edit-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.meta-edit-form input {
+  padding: 0.4rem 0.6rem;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: 0.95rem;
+}
+
+#meta-edit-title {
+  flex: 2 1 200px;
+}
+
+#meta-edit-course {
+  flex: 1 1 120px;
+}
+
+/* --- T-34: 검색 + 용어집 --- */
+
+.search-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.75rem 0 1.25rem;
+}
+
+.search-form input[type="search"] {
+  flex: 2 1 240px;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: 0.95rem;
+}
+
+.search-form input[type="text"] {
+  flex: 1 1 140px;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: 0.95rem;
+}
+
+.search-form button {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 6px;
+  background: #1a1a1a;
+  color: #fff;
+  cursor: pointer;
+}
+
+.search-result-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.search-result-card {
+  padding: 0.75rem 1rem;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.search-result-card__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.search-result-card__title {
+  font-weight: 600;
+  color: #1a1a1a;
+  text-decoration: none;
+}
+
+.search-result-card__title:hover {
+  text-decoration: underline;
+}
+
+.search-result-card__meta {
+  font-size: 0.8rem;
+  color: #777;
+}
+
+.search-result-card__snippet {
+  margin: 0.4rem 0 0;
+  font-size: 0.9rem;
+  color: #333;
+}
+
+.badge--matched-in {
+  background: #eef2ff;
+  color: #3355cc;
+}
+
+.glossary-section {
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid #e0e0e0;
+}
+
+.glossary-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.75rem 0 1.25rem;
+}
+
+.glossary-form input {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: 0.95rem;
+}
+
+#glossary-form-term {
+  flex: 1 1 140px;
+}
+
+#glossary-form-aliases {
+  flex: 2 1 200px;
+}
+
+#glossary-form-course {
+  flex: 1 1 120px;
+}
+
+.glossary-form button {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 6px;
+  background: #1a1a1a;
+  color: #fff;
+  cursor: pointer;
+}
+
+.glossary-term-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.glossary-term-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 0.9rem;
+}
+
+.glossary-term-card__aliases {
+  color: #777;
+}

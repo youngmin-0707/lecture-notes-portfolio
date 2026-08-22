@@ -4,6 +4,7 @@ import {
   getSession,
   getSessionAudioUrl,
   getTranscript,
+  updateSession,
   type ExportFormat,
   type SessionDetailResponse,
   type SessionSummaryDetail,
@@ -12,9 +13,10 @@ import {
 import { getUserErrorMessage } from "../errors/errorMessages.ts";
 import type { RouteParams } from "../router/router.ts";
 import { el, escapeHtml } from "../utils/dom.ts";
+import { formatDate, formatDuration, formatTimestamp } from "../utils/format.ts";
+import { PROCESSING_STATUSES, STATUS_LABELS } from "../utils/status.ts";
 import { renderShell } from "./shell.ts";
 
-const PROCESSING_STATUSES = ["TRANSCRIBING", "SUMMARIZING"];
 const POLL_INTERVAL_MS = 5000;
 
 type Tab = "summary" | "transcript";
@@ -24,33 +26,7 @@ type Tab = "summary" | "transcript";
 let currentGeneration = 0;
 let activeTab: Tab = "summary";
 let cachedTranscript: TranscriptResponse | null = null;
-
-function formatTimestamp(seconds: number): string {
-  const total = Math.max(Math.floor(seconds), 0);
-  const minutes = Math.floor(total / 60);
-  const secs = total % 60;
-  return `${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
-}
-
-function formatDuration(seconds: number | null | undefined): string {
-  if (seconds === null || seconds === undefined) return "-";
-  return formatTimestamp(seconds);
-}
-
-function formatDate(iso: string | undefined): string {
-  if (!iso) return "-";
-  try {
-    return new Date(iso).toLocaleString("ko-KR", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return iso;
-  }
-}
+let isEditingMeta = false;
 
 /**
  * `contentMarkdown`의 "## 한 줄 요약" 섹션만 뽑는다 — 백엔드(app/api/v1/sessions.py의
@@ -252,8 +228,61 @@ function wireInteractions(sessionId: string, generation: number): void {
     if (exportButton) {
       const format = exportButton.dataset.export as ExportFormat | undefined;
       if (format) void handleExport(sessionId, format);
+      return;
+    }
+
+    if (target.closest("#meta-edit-start")) {
+      isEditingMeta = true;
+      if (lastRenderedSession) rerenderMetaArea(lastRenderedSession);
+      return;
+    }
+
+    if (target.closest("#meta-edit-cancel")) {
+      isEditingMeta = false;
+      if (lastRenderedSession) rerenderMetaArea(lastRenderedSession);
     }
   });
+
+  container.addEventListener("submit", (event) => {
+    const form = event.target as HTMLElement;
+    if (form.id === "meta-edit-form") {
+      event.preventDefault();
+      void handleMetaEditSubmit(sessionId, generation);
+    }
+  });
+}
+
+async function handleMetaEditSubmit(sessionId: string, generation: number): Promise<void> {
+  const titleInput = el<"input">("meta-edit-title");
+  const courseInput = el<"input">("meta-edit-course");
+  const title = titleInput?.value.trim() ?? "";
+  const course = courseInput?.value.trim() ?? "";
+
+  if (!title) {
+    setMetaEditStatus(`<p class="status status--error">제목은 비워둘 수 없습니다.</p>`);
+    return;
+  }
+
+  try {
+    const updated = await updateSession(sessionId, { title, course: course || undefined });
+    if (generation !== currentGeneration) return;
+    lastRenderedSession = updated;
+    isEditingMeta = false;
+    setMetaEditStatus("");
+    rerenderMetaArea(updated);
+  } catch (error) {
+    setMetaEditStatus(`<p class="status status--error">${getUserErrorMessage(error)}</p>`);
+  }
+}
+
+function setMetaEditStatus(html: string): void {
+  const target = el("meta-edit-status");
+  if (target) target.innerHTML = html;
+}
+
+function rerenderMetaArea(session: SessionDetailResponse): void {
+  const target = el("session-meta-area");
+  if (target) target.innerHTML = renderTitleAndMeta(session);
 }
 
 let lastRenderedSession: SessionDetailResponse | null = null;
@@ -269,25 +298,35 @@ async function loadTranscriptIfNeeded(sessionId: string, generation: number): Pr
   }
 }
 
-function renderStatusBadgeLabel(status: string): string {
-  const labels: Record<string, string> = {
-    UPLOADED: "업로드됨",
-    TRANSCRIBING: "전사 중",
-    TRANSCRIBED: "전사 완료",
-    SUMMARIZING: "요약 중",
-    DONE: "완료",
-    FAILED: "실패",
-  };
-  return labels[status] ?? status;
-}
+function renderTitleAndMeta(session: SessionDetailResponse): string {
+  if (isEditingMeta) {
+    return `
+      <form id="meta-edit-form" class="meta-edit-form">
+        <input type="text" id="meta-edit-title" value="${escapeHtml(session.title)}" maxlength="200" placeholder="제목" />
+        <input type="text" id="meta-edit-course" value="${escapeHtml(session.course ?? "")}" maxlength="100" placeholder="과목 (선택)" />
+        <button type="submit" class="btn btn--export">저장</button>
+        <button type="button" id="meta-edit-cancel" class="btn btn--export">취소</button>
+      </form>
+    `;
+  }
 
-function renderSessionShell(session: SessionDetailResponse): string {
-  const audioUrl = getSessionAudioUrl(session.sessionId);
   const metaParts = [
     session.course,
     formatDuration(session.durationSeconds),
     formatDate(session.recordedAt),
   ].filter((part): part is string => Boolean(part));
+
+  return `
+    <h1>${escapeHtml(session.title)} <button type="button" id="meta-edit-start" class="edit-icon-btn" aria-label="제목·과목 수정">✎</button></h1>
+    <p class="session-detail__meta">
+      <span class="badge badge--${session.status.toLowerCase()}">${STATUS_LABELS[session.status]}</span>
+      ${escapeHtml(metaParts.join(" · "))}
+    </p>
+  `;
+}
+
+function renderSessionShell(session: SessionDetailResponse): string {
+  const audioUrl = getSessionAudioUrl(session.sessionId);
 
   const processingNotice = PROCESSING_STATUSES.includes(session.status)
     ? `<p class="status status--loading">처리 중입니다... 자동으로 갱신됩니다.</p>`
@@ -299,11 +338,8 @@ function renderSessionShell(session: SessionDetailResponse): string {
 
   return `
     <a href="#/" class="back-link">← 홈으로</a>
-    <h1>${escapeHtml(session.title)}</h1>
-    <p class="session-detail__meta">
-      <span class="badge badge--${session.status.toLowerCase()}">${renderStatusBadgeLabel(session.status)}</span>
-      ${escapeHtml(metaParts.join(" · "))}
-    </p>
+    <div id="session-meta-area">${renderTitleAndMeta(session)}</div>
+    <div id="meta-edit-status"></div>
     ${processingNotice}
     ${failedNotice}
 
