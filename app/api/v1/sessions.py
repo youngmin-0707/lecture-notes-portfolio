@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import math
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, Form, Query, UploadFile
+from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session as DBSession
 
@@ -23,6 +24,13 @@ from app.audio.storage import delete_stored_file, save_upload_stream
 from app.audio.validation import detect_audio_format, probe_audio, validate_duration_seconds
 from app.core.errors import AppError
 from app.db.session import get_db
+from app.export import (
+    build_content_disposition,
+    build_export_filename,
+    render_markdown_export,
+    render_srt_export,
+    render_txt_export,
+)
 from app.models.enums import SessionSource, SessionStatus
 from app.models.session import Session as SessionModel
 from app.models.summary import Summary
@@ -476,3 +484,57 @@ def delete_session(
 
     if audio_path:
         delete_stored_file(audio_path)
+
+
+EXPORT_MEDIA_TYPES: dict[str, str] = {
+    "md": "text/markdown; charset=utf-8",
+    "txt": "text/plain; charset=utf-8",
+    "srt": "application/x-subrip; charset=utf-8",
+}
+
+
+@router.get("/sessions/{session_id}/export")
+def export_session(
+    session_id: str,
+    db: Annotated[DBSession, Depends(get_db, scope="function")],
+    format: Literal["md", "txt", "srt"] = "md",
+) -> Response:
+    """세션 내보내기 (§5.3⑦, US-16). 허용 목록 외 `format`은 자동으로 400 처리된다."""
+    session = _get_session_or_404(db, session_id)
+
+    transcript = db.execute(
+        select(Transcript).where(Transcript.session_id == session.id)
+    ).scalar_one_or_none()
+    if transcript is None:
+        raise AppError("TRANSCRIPT_NOT_READY")
+
+    if format == "txt":
+        content = render_txt_export(transcript)
+    elif format == "srt":
+        content = render_srt_export(transcript)
+    else:
+        latest_summary = db.execute(
+            select(Summary)
+            .where(Summary.session_id == session.id)
+            .order_by(Summary.created_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        content = render_markdown_export(
+            title=session.title,
+            course=session.course,
+            recorded_at=session.recorded_at,
+            transcript=transcript,
+            summary=latest_summary,
+        )
+
+    filename = build_export_filename(
+        recorded_at=session.recorded_at,
+        course=session.course,
+        title=session.title,
+        extension=format,
+    )
+    return Response(
+        content=content,
+        media_type=EXPORT_MEDIA_TYPES[format],
+        headers={"Content-Disposition": build_content_disposition(filename)},
+    )
