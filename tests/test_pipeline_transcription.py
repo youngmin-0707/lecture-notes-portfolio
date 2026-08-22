@@ -12,6 +12,7 @@ from sqlalchemy import select
 
 from app.core.errors import AppError
 from app.models.enums import SessionStatus
+from app.models.glossary import GlossaryTerm
 from app.models.session import Session
 from app.models.transcript import Transcript, TranscriptSegment
 from app.pipeline import progress as progress_module
@@ -62,7 +63,9 @@ class TestSuccessfulTranscription:
         assert transcript.text_raw == (
             "오늘은 이진 탐색 트리에 대해 알아보겠습니다. 먼저 삽입 연산부터 보겠습니다."
         )
-        assert transcript.text_corrected is None
+        # T-23: 용어집이 비어 있으면(이 테스트에는 아무 용어도 없다) 보정본은 원본과 같다 —
+        # 그래도 항상 채워진다(§3.3 "원본과 보정본을 둘 다 보존").
+        assert transcript.text_corrected == transcript.text_raw
         assert transcript.language == "ko"
         assert transcript.provider == "fake"
         assert transcript.provider_model == "fake-large"
@@ -189,6 +192,102 @@ class TestFailedTranscription:
             ).first()
             is None
         )
+
+
+class TestGlossaryCorrection:
+    """T-23, US-13: 프롬프트 바이어싱 + 전사 후 용어 보정."""
+
+    def test_initial_prompt_built_from_applicable_glossary_terms(self, db_session) -> None:
+        session = _make_session(course="자료구조")
+        db_session.add(session)
+        db_session.add_all(
+            [
+                GlossaryTerm(term="PostgreSQL", aliases=["포스트그레"], course=None),
+                GlossaryTerm(term="이진 탐색 트리", aliases=["비에스티"], course="자료구조"),
+                GlossaryTerm(term="다른과목전용", aliases=[], course="네트워크"),
+            ]
+        )
+        db_session.flush()
+
+        provider = FakeSttProvider()
+        transcribe_session(db_session, session, provider)
+
+        assert len(provider.calls) == 1
+        prompt = provider.calls[0].initial_prompt
+        assert prompt is not None
+        assert "PostgreSQL" in prompt
+        assert "이진 탐색 트리" in prompt
+        assert "다른과목전용" not in prompt
+
+    def test_explicit_initial_prompt_overrides_auto_generated(self, db_session) -> None:
+        session = _make_session()
+        db_session.add(session)
+        db_session.add(GlossaryTerm(term="PostgreSQL", aliases=["포스트그레"], course=None))
+        db_session.flush()
+
+        provider = FakeSttProvider()
+        transcribe_session(db_session, session, provider, initial_prompt="커스텀 프롬프트")
+
+        assert provider.calls[0].initial_prompt == "커스텀 프롬프트"
+
+    def test_corrected_text_replaces_aliases_with_canonical_term(self, db_session) -> None:
+        session = _make_session()
+        db_session.add(session)
+        db_session.add(
+            GlossaryTerm(term="PostgreSQL", aliases=["포스트그레스큐엘", "포스트그레"], course=None)
+        )
+        db_session.flush()
+
+        segments = [SttSegment(start=0.0, end=3.0, text="포스트그레스큐엘에서 조인을 하면")]
+        provider = FakeSttProvider(segments=segments)
+
+        transcribe_session(db_session, session, provider)
+
+        transcript = db_session.execute(
+            select(Transcript).where(Transcript.session_id == session.id)
+        ).scalar_one()
+        assert transcript.text_raw == "포스트그레스큐엘에서 조인을 하면"
+        assert transcript.text_corrected == "PostgreSQL에서 조인을 하면"
+
+    def test_longer_alias_matched_before_shorter_prefix_alias(self, db_session) -> None:
+        """ "포스트그레"가 "포스트그레스큐엘"의 부분 치환을 깨뜨리면 안 된다 (§3.3)."""
+        session = _make_session()
+        db_session.add(session)
+        db_session.add(
+            GlossaryTerm(term="PostgreSQL", aliases=["포스트그레스큐엘", "포스트그레"], course=None)
+        )
+        db_session.flush()
+
+        segments = [SttSegment(start=0.0, end=1.0, text="포스트그레스큐엘 그리고 포스트그레")]
+        provider = FakeSttProvider(segments=segments)
+
+        transcribe_session(db_session, session, provider)
+
+        transcript = db_session.execute(
+            select(Transcript).where(Transcript.session_id == session.id)
+        ).scalar_one()
+        assert transcript.text_corrected == "PostgreSQL 그리고 PostgreSQL"
+
+    def test_java_alias_does_not_break_javascript(self, db_session) -> None:
+        session = _make_session()
+        db_session.add(session)
+        db_session.add_all(
+            [
+                GlossaryTerm(term="Java", aliases=["자바"], course=None),
+                GlossaryTerm(term="JavaScript", aliases=["자바스크립트"], course=None),
+            ]
+        )
+        db_session.flush()
+
+        segments = [SttSegment(start=0.0, end=1.0, text="자바스크립트와 자바는 다릅니다")]
+        provider = FakeSttProvider(segments=segments)
+
+        transcribe_session(db_session, session, provider)
+
+        transcript = db_session.execute(
+            select(Transcript).where(Transcript.session_id == session.id)
+        ).scalar_one()
+        assert transcript.text_corrected == "JavaScript와 Java는 다릅니다"
 
 
 class TestProgressDuringTranscription:
