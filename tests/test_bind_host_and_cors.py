@@ -74,3 +74,20 @@ def test_cors_blocks_other_origins() -> None:
         response = client.get("/health", headers={"Origin": "http://evil.example.com"})
 
     assert "access-control-allow-origin" not in response.headers
+
+
+def test_cors_exposes_content_disposition_header() -> None:
+    """T-33: 브라우저는 기본적으로 응답 헤더 중 "안전 목록"만 JS에서 읽을 수 있다.
+
+    `expose_headers`에 명시하지 않으면 cross-origin fetch에서
+    `response.headers.get("Content-Disposition")`이 항상 null이 된다 — 프론트 내보내기
+    다운로드의 실제 파일명을 못 읽는 버그로 실측됐다(T-33 커밋 참고).
+    """
+    from app.main import app
+
+    with TestClient(app) as client:
+        response = client.get("/health", headers={"Origin": "http://127.0.0.1:5500"})
+
+    exposed = response.headers.get("access-control-expose-headers", "")
+    assert "Content-Disposition" in exposed
+    assert "X-Request-Id" in exposed

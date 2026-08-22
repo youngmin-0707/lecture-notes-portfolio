@@ -75,6 +75,11 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    # 브라우저는 기본적으로 "안전 목록"에 없는 응답 헤더를 JS에서 못 읽는다 — 이 둘을
+    # 명시적으로 노출하지 않으면 cross-origin(프론트 5173 → 백엔드 8765) fetch에서
+    # response.headers.get("Content-Disposition")이 항상 null이 된다. T-33에서 프론트
+    # 내보내기 다운로드 파일명이 계속 "download"로 나오는 걸 실제로 겪고서야 발견했다.
+    expose_headers=["Content-Disposition", "X-Request-Id"],
 )
 
 
