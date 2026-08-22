@@ -51,6 +51,16 @@ class Settings(BaseSettings):
     OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
     # 처리 종료 직후 RAM을 반환하기 위해 짧게 유지한다 (§0 D13).
     OLLAMA_KEEP_ALIVE: str = "30s"
+    # 60분 강의 전사(약 1.5~2.5만 토큰)를 감안해 넉넉히 잡는다 (§3.4, T-17). map-reduce(T-21)
+    # 도입 전까지는 이 값이 사실상 유일한 여유분이다.
+    OLLAMA_NUM_CTX: int = 8192
+    # 로컬 8B/14B 모델의 긴 프롬프트 생성은 수 분이 걸릴 수 있다.
+    OLLAMA_TIMEOUT_SECONDS: float = 600.0
+
+    # --- 요약 재시도 정책 (§3.4 Provider 정책, T-18) ---
+    # 429/5xx/타임아웃만 지수 백오프로 재시도한다. 4xx(프롬프트/형식 오류)는 즉시 실패.
+    LLM_MAX_RETRIES: int = 3
+    LLM_RETRY_BASE_DELAY_SECONDS: float = 1.0
 
     # --- 무료 티어 대안 Provider (§0 D4/D5, 그룹 E/T-29에서 사용) ---
     # 절대 로그/응답에 노출하지 않는다 (§3.4, §6 보안).

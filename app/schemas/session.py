@@ -6,7 +6,10 @@ from app.schemas.common import CamelModel, UtcDateTime
 
 
 class SessionCreateResponse(CamelModel):
-    """POST /api/v1/sessions 응답 (§5.3 ①)."""
+    """POST /api/v1/sessions 응답 (§5.3 ①).
+
+    `autoProcess=true`면 응답 시점 status가 `TRANSCRIBING`, `false`면 `UPLOADED` (T-19).
+    """
 
     session_id: str
     title: str
@@ -19,6 +22,66 @@ class SessionCreateResponse(CamelModel):
     recorded_at: UtcDateTime
     created_at: UtcDateTime
     poll_after_seconds: int
+
+
+class ProcessRequest(CamelModel):
+    """POST /api/v1/sessions/{id}/process 요청 바디 (§5.3②). 전부 선택."""
+
+    stt_model: str | None = None
+    llm_provider: str | None = None
+    skip_summary: bool = False
+
+
+class ProcessResponse(CamelModel):
+    """POST /api/v1/sessions/{id}/process 응답 (§5.3②). 202 Accepted — 즉시 응답."""
+
+    session_id: str
+    status: str
+    poll_after_seconds: int
+
+
+class SummaryKeyPointResponse(CamelModel):
+    """§5.3③ `summary.keyPoints[]` 항목."""
+
+    text: str
+    at_seconds: float | None = None
+
+
+class SummaryConceptResponse(CamelModel):
+    """§5.3③ `summary.concepts[]` 항목."""
+
+    term: str
+    description: str
+
+
+class SummaryCodeSnippetResponse(CamelModel):
+    """§5.3③ `summary.codeSnippets[]` 항목."""
+
+    language: str
+    code: str
+    description: str
+
+
+class SummaryActionItemResponse(CamelModel):
+    """§5.3③ `summary.actionItems[]` 항목."""
+
+    text: str
+    due_date: str | None = None
+
+
+class SummaryResponse(CamelModel):
+    """§5.3③ DONE 응답의 `summary` 객체."""
+
+    summary_id: str
+    content_markdown: str
+    key_points: list[SummaryKeyPointResponse]
+    concepts: list[SummaryConceptResponse]
+    code_snippets: list[SummaryCodeSnippetResponse]
+    action_items: list[SummaryActionItemResponse]
+    keywords: list[str]
+    provider: str
+    provider_model: str
+    created_at: UtcDateTime
 
 
 class ProgressResponse(CamelModel):
@@ -42,8 +105,8 @@ class TranscriptInfoResponse(CamelModel):
 class SessionDetailResponse(CamelModel):
     """GET /api/v1/sessions/{id} 응답 (§5.3③).
 
-    이번 라운드(그룹 C)에는 요약 기능이 없으므로 `summary`는 항상 `null`이다
-    (그룹 D/T-16~T-19에서 채워진다).
+    `summary`는 최신 요약 1건(있다면)을 `SummaryResponse`로 채운다 (T-19, §2.3 "최신 1건이
+    기본 표시"). 요약이 아직 없거나(처리 중/미시작) 요약 단계가 실패했다면 `null`이다.
     """
 
     session_id: str
@@ -57,7 +120,7 @@ class SessionDetailResponse(CamelModel):
     progress: ProgressResponse | None = None
     poll_after_seconds: int | None = None
     transcript: TranscriptInfoResponse
-    summary: dict | None = None
+    summary: SummaryResponse | None = None
 
 
 class TranscriptSegmentResponse(CamelModel):

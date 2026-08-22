@@ -1,7 +1,12 @@
-"""세션 API (§5.3). 이번 범위(T-09)는 업로드 → 세션 생성만 다룬다.
+"""세션 API (§5.3).
 
-`autoProcess`는 필드로만 받는다. 실제 전사·요약 파이프라인 연결(§2.1, US-02)은
-그룹 C/D(T-19)에서 이어붙인다 — 지금은 업로드가 성공하면 항상 `status="UPLOADED"`로 응답한다.
+`db` 의존성은 전부 `Depends(get_db, scope="function")`로 선언한다 — FastAPI 0.118+ 기본값인
+`scope="request"`는 의존성 종료 코드(`get_db`의 `db.commit()`)를 응답 전송 "이후"(=
+`BackgroundTasks` 실행과 같은 시점 또는 그 이후)로 미루는데, 이 라우터의 `create_session`/
+`process_session`은 커밋 직후 같은 세션 행을 만지는 `BackgroundTasks`를 예약한다.
+`scope="function"`이 아니면 요청 트랜잭션의 커밋이 아직 끝나지 않은 상태에서 백그라운드
+작업이 같은 행에 UPDATE를 시도해 실제로 Postgres 행 잠금 경합(데드락처럼 보이는 무한 대기)이
+발생함을 실측으로 확인했다 (T-19). 참고: https://fastapi.tiangolo.com/advanced/advanced-dependencies/
 """
 
 from __future__ import annotations
@@ -9,7 +14,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, Form, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DBSession
 
@@ -19,12 +24,21 @@ from app.core.errors import AppError
 from app.db.session import get_db
 from app.models.enums import SessionSource, SessionStatus
 from app.models.session import Session as SessionModel
+from app.models.summary import Summary
 from app.models.transcript import Transcript
+from app.pipeline.orchestration import run_pipeline_in_background
 from app.pipeline.progress import ProgressInfo, get_progress
 from app.schemas.session import (
+    ProcessRequest,
+    ProcessResponse,
     ProgressResponse,
     SessionCreateResponse,
     SessionDetailResponse,
+    SummaryActionItemResponse,
+    SummaryCodeSnippetResponse,
+    SummaryConceptResponse,
+    SummaryKeyPointResponse,
+    SummaryResponse,
     TranscriptDetailResponse,
     TranscriptInfoResponse,
     TranscriptSegmentResponse,
@@ -46,13 +60,12 @@ def _default_title(now: datetime) -> str:
 @router.post("/sessions", status_code=201, response_model=SessionCreateResponse)
 async def create_session(
     file: Annotated[UploadFile, File()],
-    db: Annotated[DBSession, Depends(get_db)],
+    db: Annotated[DBSession, Depends(get_db, scope="function")],
+    background_tasks: BackgroundTasks,
     title: Annotated[str | None, Form(max_length=200)] = None,
     course: Annotated[str | None, Form(max_length=100)] = None,
     autoProcess: Annotated[bool, Form()] = True,  # noqa: N803 (§5.1 camelCase 요청 필드)
 ) -> SessionCreateResponse:
-    del autoProcess  # 이번 범위에서는 접수만 하고 실제 파이프라인 트리거는 하지 않는다.
-
     saved = await save_upload_stream(file)
 
     try:
@@ -85,6 +98,13 @@ async def create_session(
         delete_stored_file(saved.path)
         raise
 
+    # US-02, T-19: autoProcess=true면 응답 시점 status가 TRANSCRIBING이고, 전사→요약이
+    # 백그라운드로 자동 시작된다 (§5.3①).
+    if autoProcess:
+        session.status = SessionStatus.TRANSCRIBING.value
+        db.flush()
+        background_tasks.add_task(run_pipeline_in_background, session.id)
+
     return SessionCreateResponse(
         session_id=session.id,
         title=session.title,
@@ -96,6 +116,44 @@ async def create_session(
         duration_seconds=session.duration_seconds,
         recorded_at=session.recorded_at,
         created_at=session.created_at,
+        poll_after_seconds=DEFAULT_POLL_AFTER_SECONDS,
+    )
+
+
+@router.post("/sessions/{session_id}/process", status_code=202, response_model=ProcessResponse)
+def process_session(
+    session_id: str,
+    db: Annotated[DBSession, Depends(get_db, scope="function")],
+    background_tasks: BackgroundTasks,
+    body: Annotated[ProcessRequest | None, Body()] = None,
+) -> ProcessResponse:
+    """전사 + 요약 실행 (§5.3②, US-02).
+
+    202 Accepted로 즉시 응답하고, 실제 처리는 `BackgroundTasks`로 예약한다 — 전사는 수 분이
+    걸리므로 동기 응답으로 만들면 타임아웃이 나고 UI가 멈춘다.
+    """
+    session = _get_session_or_404(db, session_id)
+    if session.status in _PROCESSING_STATUSES:
+        raise AppError("INVALID_SESSION_STATE")
+
+    request = body or ProcessRequest()
+
+    session.status = SessionStatus.TRANSCRIBING.value
+    session.error_code = None
+    session.error_message = None
+    db.flush()
+
+    background_tasks.add_task(
+        run_pipeline_in_background,
+        session.id,
+        stt_model=request.stt_model,
+        llm_provider_name=request.llm_provider,
+        skip_summary=request.skip_summary,
+    )
+
+    return ProcessResponse(
+        session_id=session.id,
+        status=session.status,
         poll_after_seconds=DEFAULT_POLL_AFTER_SECONDS,
     )
 
@@ -120,7 +178,7 @@ def _resolve_progress(session: SessionModel) -> ProgressInfo | None:
 @router.get("/sessions/{session_id}", response_model=SessionDetailResponse)
 def get_session_detail(
     session_id: str,
-    db: Annotated[DBSession, Depends(get_db)],
+    db: Annotated[DBSession, Depends(get_db, scope="function")],
 ) -> SessionDetailResponse:
     """세션 상세 조회 (§5.3③). 처리 실패(FAILED)여도 HTTP 200을 반환한다."""
     session = _get_session_or_404(db, session_id)
@@ -140,6 +198,43 @@ def get_session_detail(
         )
     else:
         transcript_info = TranscriptInfoResponse(available=False)
+
+    latest_summary = db.execute(
+        select(Summary)
+        .where(Summary.session_id == session.id)
+        .order_by(Summary.created_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    summary_response = (
+        SummaryResponse(
+            summary_id=latest_summary.id,
+            content_markdown=latest_summary.content_markdown,
+            key_points=[
+                SummaryKeyPointResponse(text=p["text"], at_seconds=p.get("atSeconds"))
+                for p in latest_summary.key_points
+            ],
+            concepts=[
+                SummaryConceptResponse(term=c["term"], description=c["description"])
+                for c in latest_summary.concepts
+            ],
+            code_snippets=[
+                SummaryCodeSnippetResponse(
+                    language=s["language"], code=s["code"], description=s.get("description", "")
+                )
+                for s in latest_summary.code_snippets
+            ],
+            action_items=[
+                SummaryActionItemResponse(text=a["text"], due_date=a.get("dueDate"))
+                for a in latest_summary.action_items
+            ],
+            keywords=list(latest_summary.keywords),
+            provider=latest_summary.provider,
+            provider_model=latest_summary.provider_model,
+            created_at=latest_summary.created_at,
+        )
+        if latest_summary is not None
+        else None
+    )
 
     progress = _resolve_progress(session)
     progress_response = (
@@ -162,14 +257,14 @@ def get_session_detail(
         progress=progress_response,
         poll_after_seconds=DEFAULT_POLL_AFTER_SECONDS if progress is not None else None,
         transcript=transcript_info,
-        summary=None,
+        summary=summary_response,
     )
 
 
 @router.get("/sessions/{session_id}/transcript", response_model=TranscriptDetailResponse)
 def get_session_transcript(
     session_id: str,
-    db: Annotated[DBSession, Depends(get_db)],
+    db: Annotated[DBSession, Depends(get_db, scope="function")],
     corrected: bool = True,
 ) -> TranscriptDetailResponse:
     """전사 전문 + 세그먼트 조회 (§5.3④, US-04).

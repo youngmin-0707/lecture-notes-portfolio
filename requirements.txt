@@ -16,3 +16,6 @@ av>=13.0
 
 # 로컬 STT 엔진 (T-11, §0 D3). large-v3-turbo 모델은 최초 사용 시 자동 다운로드된다.
 faster-whisper>=1.1
+
+# 로컬 LLM(Ollama) HTTP API 클라이언트 (T-17). CLI shell-out 대신 HTTP로만 통신한다.
+httpx>=0.27

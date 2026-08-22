@@ -80,11 +80,16 @@ class AppError(Exception):
         message: str | None = None,
         details: list[dict[str, Any]] | None = None,
         status_code: int | None = None,
+        retryable: bool = False,
     ) -> None:
         self.code = code
         self.status_code = status_code or CODE_STATUS.get(code, 500)
         self.message = message or CODE_MESSAGES.get(code, "요청을 처리할 수 없습니다.")
         self.details = details or []
+        # §3.4 Provider 정책: 429/5xx/타임아웃만 재시도 대상이다. LLM Provider(T-17)가 이 플래그로
+        # 표시하면, 요약 오케스트레이션(T-18)이 지수 백오프 재시도 여부를 판단한다. 기본값은 False라
+        # 기존 호출부(STT 등)의 동작에는 영향이 없다.
+        self.retryable = retryable
         super().__init__(self.message)
 
 

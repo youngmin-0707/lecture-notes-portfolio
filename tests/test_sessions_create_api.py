@@ -88,18 +88,25 @@ class TestSuccessfulUpload:
         assert body["title"].endswith("수업")
         assert body["course"] is None
 
-    def test_status_is_uploaded_for_now_regardless_of_autoprocess(
+    def test_autoprocess_true_transitions_to_transcribing(
         self, client, valid_wav_bytes: bytes
     ) -> None:
-        """이번 범위(T-01~T-09)는 자동 처리 파이프라인을 연결하지 않는다.
-
-        `autoProcess=true`를 보내도 지금은 UPLOADED로 응답한다 (그룹 C/D에서
-        파이프라인이 연결되면 TRANSCRIBING으로 전이하도록 확장될 지점).
-        """
+        """US-02, T-19: autoProcess=true(기본값)면 응답 시점 status가 TRANSCRIBING이고,
+        전사→요약 파이프라인이 백그라운드로 예약된다 (§5.3①)."""
         response = client.post(
             "/api/v1/sessions",
             files={"file": ("lecture.wav", valid_wav_bytes, "audio/wav")},
             data={"autoProcess": "true"},
+        )
+
+        assert response.status_code == 201, response.text
+        assert response.json()["status"] == "TRANSCRIBING"
+
+    def test_autoprocess_false_stays_uploaded(self, client, valid_wav_bytes: bytes) -> None:
+        response = client.post(
+            "/api/v1/sessions",
+            files={"file": ("lecture.wav", valid_wav_bytes, "audio/wav")},
+            data={"autoProcess": "false"},
         )
 
         assert response.status_code == 201, response.text

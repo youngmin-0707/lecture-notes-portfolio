@@ -1,0 +1,105 @@
+"""로컬 Ollama HTTP API 구현체 (T-17, §0 D5/D13, §3.4).
+
+CLI를 shell-out하지 않고 반드시 HTTP API(`/api/generate`)로 통신한다 — CLI 바이너리는
+PATH에 없을 수 있고(macOS 앱 번들 내부에만 존재), 서버는 이미 별도로 기동되어 있다.
+
+- `keep_alive`를 요청마다 짧게(`settings.OLLAMA_KEEP_ALIVE`, 기본 `"30s"`) 넘겨 요약 완료 후
+  빠르게 모델이 메모리에서 풀리게 한다 (§0 D13, §3.4 Provider 정책).
+- `think: false`로 reasoning 모델(qwen3)의 사고 과정 토큰을 끄고, `format: "json"`으로 순수
+  JSON 응답을 강제한다 — 파싱 안정성과 응답 속도를 동시에 높인다.
+- `options.num_ctx`(기본 8192)로 컨텍스트 길이를 넉넉히 확보한다 (§3.4, T-15/T-21 이전 임시
+  여유분).
+- 로컬 API이므로 오프라인 모드(US-09)에서도 정상 동작한다 — 외부 네트워크 요청이 없다.
+"""
+
+from __future__ import annotations
+
+import logging
+
+import httpx
+
+from app.core.config import settings
+from app.core.errors import AppError
+from app.llm.base import LlmProvider
+
+logger = logging.getLogger("app.llm.ollama")
+
+
+class OllamaLlmProvider(LlmProvider):
+    """로컬 Ollama `/api/generate` 어댑터."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str | None = None,
+        model: str | None = None,
+        keep_alive: str | None = None,
+        num_ctx: int | None = None,
+        timeout_seconds: float | None = None,
+    ) -> None:
+        self._base_url = (base_url or settings.OLLAMA_BASE_URL).rstrip("/")
+        self._model = model or settings.LLM_MODEL
+        self._keep_alive = keep_alive if keep_alive is not None else settings.OLLAMA_KEEP_ALIVE
+        self._num_ctx = num_ctx or settings.OLLAMA_NUM_CTX
+        self._timeout_seconds = timeout_seconds or settings.OLLAMA_TIMEOUT_SECONDS
+
+    @property
+    def provider_name(self) -> str:
+        return "ollama"
+
+    @property
+    def provider_model(self) -> str:
+        return self._model
+
+    def generate(self, prompt: str) -> str:
+        payload = {
+            "model": self._model,
+            "prompt": prompt,
+            "format": "json",
+            "stream": False,
+            "think": False,
+            "keep_alive": self._keep_alive,
+            "options": {"num_ctx": self._num_ctx},
+        }
+
+        try:
+            response = httpx.post(
+                f"{self._base_url}/api/generate",
+                json=payload,
+                timeout=self._timeout_seconds,
+            )
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            # Ollama 데몬이 기동되어 있지 않음 — 재시도로 해결되지 않는다.
+            raise AppError("LLM_NOT_CONFIGURED", retryable=False) from exc
+        except httpx.TimeoutException as exc:
+            raise AppError("LLM_FAILED", retryable=True) from exc
+        except httpx.HTTPError as exc:
+            raise AppError("LLM_FAILED", retryable=True) from exc
+
+        if response.status_code == 429:
+            raise AppError("LLM_QUOTA_EXCEEDED", retryable=True)
+        if response.status_code == 404:
+            # 모델이 pull되어 있지 않은 등 사용 불가 상태 — 재시도로 해결되지 않는다.
+            raise AppError("LLM_NOT_CONFIGURED", retryable=False)
+        if response.status_code >= 500:
+            raise AppError("LLM_FAILED", retryable=True)
+        if response.status_code >= 400:
+            # 프롬프트/요청 형식 오류 등 — 재시도해도 동일하게 실패한다 (§3.4 4xx는 즉시 실패).
+            raise AppError("LLM_FAILED", retryable=False)
+
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise AppError("LLM_INVALID_RESPONSE", retryable=False) from exc
+
+        text = data.get("response")
+        if not isinstance(text, str):
+            raise AppError("LLM_INVALID_RESPONSE", retryable=False)
+
+        logger.info(
+            "Ollama generate succeeded: model=%s prompt_length=%d response_length=%d",
+            self._model,
+            len(prompt),
+            len(text),
+        )
+        return text

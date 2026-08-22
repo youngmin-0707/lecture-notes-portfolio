@@ -75,6 +75,29 @@ def client(db_session: Session) -> Iterator[TestClient]:
     app.dependency_overrides.clear()
 
 
+@pytest.fixture(autouse=True)
+def _fake_pipeline_providers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """기본적으로 모든 테스트에서 STT/LLM은 Fake Provider를 쓰게 한다 (§6 테스트성 NFR).
+
+    `POST /sessions`(autoProcess=true 기본값)·`POST /sessions/{id}/process`는 실제 서버에서는
+    `app.pipeline.orchestration.build_stt_provider`/`build_llm_provider`로 실제 Whisper/Ollama를
+    조립한다. 이 fixture가 없으면 API 테스트가 백그라운드 작업을 통해 무거운 실제 모델을
+    로드하거나 로컬 Ollama에 실제로 요청을 보내게 되어, "전체 스위트가 외부 API 미호출 +
+    실제 모델 미로드로 수 초 내 완료"(§6)를 어기게 된다. 실제 엔진을 검증하는 테스트
+    (`tests/integration/`)는 이 fixture와 무관하게 provider를 직접 인스턴스화해 사용한다.
+    """
+    from app.llm.fake import FakeLlmProvider
+    from app.pipeline import orchestration as orchestration_module
+    from app.stt.fake import FakeSttProvider
+
+    monkeypatch.setattr(
+        orchestration_module, "build_stt_provider", lambda model=None: FakeSttProvider()
+    )
+    monkeypatch.setattr(
+        orchestration_module, "build_llm_provider", lambda name=None: FakeLlmProvider()
+    )
+
+
 @pytest.fixture()
 def real_client(engine: Engine) -> Iterator[TestClient]:
     """DB 의존성을 오버라이드하지 않는 클라이언트. 실제 커밋이 필요한 테스트 전용."""

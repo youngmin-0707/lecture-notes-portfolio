@@ -8,6 +8,7 @@ import pytest
 
 from app.models.enums import SessionStatus
 from app.models.session import Session
+from app.models.summary import Summary
 from app.models.transcript import Transcript, TranscriptSegment
 from app.pipeline import progress as progress_module
 
@@ -98,6 +99,92 @@ class TestSessionDetailDone:
         assert body["transcript"]["characterCount"] > 0
         assert body["summary"] is None
         assert body["errorCode"] is None
+
+
+class TestSessionDetailWithSummary:
+    def test_done_session_includes_summary_response(self, client, db_session) -> None:
+        """T-19: summary는 SummaryResponse 스키마로 채워진다 (§5.3③ DONE 예시)."""
+        session = _make_session(status=SessionStatus.DONE.value)
+        db_session.add(session)
+        db_session.flush()
+        _add_transcript(db_session, session)
+        summary = Summary(
+            session_id=session.id,
+            content_markdown="## 한 줄 요약\n이진 탐색 트리 개요...",
+            key_points=[{"text": "BST 삽입은 평균 O(log n)", "atSeconds": 420.0}],
+            concepts=[{"term": "중위 순회", "description": "왼쪽 → 루트 → 오른쪽 순회."}],
+            code_snippets=[
+                {"language": "python", "code": "def inorder(node): ...", "description": "중위 순회"}
+            ],
+            action_items=[{"text": "과제 3번 제출", "dueDate": "2026-08-27"}],
+            keywords=["이진 탐색 트리", "중위 순회"],
+            provider="ollama",
+            provider_model="qwen3:8b",
+        )
+        db_session.add(summary)
+        db_session.flush()
+
+        response = client.get(f"/api/v1/sessions/{session.id}")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "DONE"
+        assert body["summary"] is not None
+        assert body["summary"]["summaryId"] == summary.id
+        assert body["summary"]["contentMarkdown"].startswith("## 한 줄 요약")
+        assert body["summary"]["keyPoints"] == [
+            {"text": "BST 삽입은 평균 O(log n)", "atSeconds": 420.0}
+        ]
+        assert body["summary"]["actionItems"] == [
+            {"text": "과제 3번 제출", "dueDate": "2026-08-27"}
+        ]
+        assert body["summary"]["provider"] == "ollama"
+        assert body["summary"]["providerModel"] == "qwen3:8b"
+
+    def test_multiple_summaries_show_latest_first(self, client, db_session) -> None:
+        """§2.3: 세션당 N건 허용, 최신 1건이 기본 표시."""
+        session = _make_session(status=SessionStatus.DONE.value)
+        db_session.add(session)
+        db_session.flush()
+        _add_transcript(db_session, session)
+
+        # created_at을 명시적으로 벌려 정렬이 시각 해상도에 우연히 의존하지 않게 한다.
+        older = Summary(
+            session_id=session.id,
+            content_markdown="## 한 줄 요약\n(구버전)",
+            key_points=[],
+            concepts=[],
+            code_snippets=[],
+            action_items=[],
+            keywords=[],
+            provider="ollama",
+            provider_model="qwen3:8b",
+            created_at=datetime(2026, 8, 20, 10, 0, 0, tzinfo=UTC),
+        )
+        db_session.add(older)
+        db_session.flush()
+
+        newer = Summary(
+            session_id=session.id,
+            content_markdown="## 한 줄 요약\n(최신)",
+            key_points=[],
+            concepts=[],
+            code_snippets=[],
+            action_items=[],
+            keywords=[],
+            provider="ollama",
+            provider_model="qwen3:14b",
+            created_at=datetime(2026, 8, 20, 11, 0, 0, tzinfo=UTC),
+        )
+        db_session.add(newer)
+        db_session.flush()
+
+        response = client.get(f"/api/v1/sessions/{session.id}")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["summary"]["summaryId"] == newer.id
+        assert "(최신)" in body["summary"]["contentMarkdown"]
 
 
 class TestSessionDetailProcessing:
