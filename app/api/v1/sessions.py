@@ -11,11 +11,12 @@
 
 from __future__ import annotations
 
+import math
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, Form, UploadFile
-from sqlalchemy import select
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, Form, Query, UploadFile
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session as DBSession
 
 from app.audio.storage import delete_stored_file, save_upload_stream
@@ -34,6 +35,8 @@ from app.schemas.session import (
     ProgressResponse,
     SessionCreateResponse,
     SessionDetailResponse,
+    SessionListItemResponse,
+    SessionListResponse,
     SummaryActionItemResponse,
     SummaryCodeSnippetResponse,
     SummaryConceptResponse,
@@ -43,6 +46,9 @@ from app.schemas.session import (
     TranscriptInfoResponse,
     TranscriptSegmentResponse,
 )
+
+# §5.3⑤ summaryPreview: 목록에 본문을 싣지 않으려고 짧게 자른다.
+SUMMARY_PREVIEW_MAX_LENGTH = 200
 
 router = APIRouter(tags=["sessions"])
 
@@ -117,6 +123,98 @@ async def create_session(
         recorded_at=session.recorded_at,
         created_at=session.created_at,
         poll_after_seconds=DEFAULT_POLL_AFTER_SECONDS,
+    )
+
+
+def _extract_summary_preview(
+    content_markdown: str, *, max_length: int = SUMMARY_PREVIEW_MAX_LENGTH
+) -> str:
+    """`content_markdown`의 "## 한 줄 요약" 섹션만 뽑아 미리보기로 자른다 (§5.3⑤).
+
+    새 스키마·필드를 추가하지 않고, 항상 존재가 보장되는 6섹션 마크다운(US-05)의 첫 섹션에서
+    결정론적으로 추출한다.
+    """
+    marker = "## 한 줄 요약\n"
+    start = content_markdown.find(marker)
+    if start == -1:
+        text = content_markdown
+    else:
+        start += len(marker)
+        end = content_markdown.find("\n##", start)
+        text = content_markdown[start:] if end == -1 else content_markdown[start:end]
+    return text.strip()[:max_length]
+
+
+@router.get("/sessions", response_model=SessionListResponse)
+def list_sessions(
+    db: Annotated[DBSession, Depends(get_db, scope="function")],
+    course: str | None = None,
+    status: SessionStatus | None = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    size: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> SessionListResponse:
+    """세션 목록 조회 (§5.3⑤, US-14). 최근 녹음순, 과목·상태 필터 + 페이징."""
+    filters = []
+    if course is not None:
+        filters.append(SessionModel.course == course)
+    if status is not None:
+        filters.append(SessionModel.status == status.value)
+
+    total_count = db.execute(
+        select(func.count()).select_from(SessionModel).where(*filters)
+    ).scalar_one()
+
+    page_sessions = (
+        db.execute(
+            select(SessionModel)
+            .where(*filters)
+            .order_by(SessionModel.recorded_at.desc())
+            .offset((page - 1) * size)
+            .limit(size)
+        )
+        .scalars()
+        .all()
+    )
+
+    session_ids = [s.id for s in page_sessions]
+    latest_summary_by_session: dict[str, Summary] = {}
+    if session_ids:
+        # session_id, created_at DESC로 정렬하면 각 session_id 그룹의 첫 행이 최신 요약이다
+        # — 세션마다 별도 쿼리(N+1)를 날리지 않고 한 번에 가져온다.
+        for summary in (
+            db.execute(
+                select(Summary)
+                .where(Summary.session_id.in_(session_ids))
+                .order_by(Summary.session_id, Summary.created_at.desc())
+            )
+            .scalars()
+            .all()
+        ):
+            latest_summary_by_session.setdefault(summary.session_id, summary)
+
+    items = [
+        SessionListItemResponse(
+            session_id=s.id,
+            title=s.title,
+            course=s.course,
+            status=s.status,
+            duration_seconds=s.duration_seconds,
+            recorded_at=s.recorded_at,
+            summary_preview=(
+                _extract_summary_preview(latest_summary_by_session[s.id].content_markdown)
+                if s.id in latest_summary_by_session
+                else None
+            ),
+        )
+        for s in page_sessions
+    ]
+
+    return SessionListResponse(
+        items=items,
+        page=page,
+        size=size,
+        total_count=total_count,
+        total_pages=math.ceil(total_count / size) if total_count else 0,
     )
 
 
@@ -300,3 +398,27 @@ def get_session_transcript(
         text=text,
         segments=segments,
     )
+
+
+@router.delete("/sessions/{session_id}", status_code=204)
+def delete_session(
+    session_id: str,
+    db: Annotated[DBSession, Depends(get_db, scope="function")],
+) -> None:
+    """세션 삭제 (§5.3⑧, US-18).
+
+    `sessions`가 삭제되면 `transcripts`/`transcript_segments`/`summaries`는 DB의
+    `ON DELETE CASCADE`가 처리한다 (§2.3, `app/models/session.py`의 관계에도
+    `passive_deletes=True`로 명시돼 있다). 오디오 파일은 DB 삭제가 (커밋 전이지만) 확실히
+    `flush()`된 뒤에 지운다 — DB 삭제가 실패하면 파일은 건드리지 않은 채로 남는다.
+    """
+    session = _get_session_or_404(db, session_id)
+    if session.status in _PROCESSING_STATUSES:
+        raise AppError("INVALID_SESSION_STATE")
+
+    audio_path = session.audio_path
+    db.delete(session)
+    db.flush()
+
+    if audio_path:
+        delete_stored_file(audio_path)

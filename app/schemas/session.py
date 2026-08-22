@@ -140,3 +140,28 @@ class TranscriptDetailResponse(CamelModel):
     corrected: bool
     text: str
     segments: list[TranscriptSegmentResponse]
+
+
+class SessionListItemResponse(CamelModel):
+    """GET /api/v1/sessions 응답의 `items[]` 항목 (§5.3⑤, US-14).
+
+    전체 전사/요약 본문은 절대 포함하지 않는다 — 목록 응답이 수 MB가 되는 것을 막기 위함.
+    """
+
+    session_id: str
+    title: str
+    course: str | None
+    status: str
+    duration_seconds: float | None
+    recorded_at: UtcDateTime
+    summary_preview: str | None = None
+
+
+class SessionListResponse(CamelModel):
+    """GET /api/v1/sessions 응답 (§5.3⑤)."""
+
+    items: list[SessionListItemResponse]
+    page: int
+    size: int
+    total_count: int
+    total_pages: int
