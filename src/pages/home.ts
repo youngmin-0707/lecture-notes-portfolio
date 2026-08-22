@@ -9,6 +9,7 @@ import {
   type UploadProgressEvent,
 } from "../api/index.ts";
 import { getUserErrorMessage } from "../errors/errorMessages.ts";
+import { el, escapeHtml } from "../utils/dom.ts";
 import { renderShell } from "./shell.ts";
 
 // §3.1 업로드 검증 규칙과 동일한 허용 형식/용량. 서버가 매직 넘버로 최종 판정하므로
@@ -93,12 +94,6 @@ function validateFileClientSide(file: File): string | null {
   return null;
 }
 
-function el<K extends keyof HTMLElementTagNameMap = "div">(
-  id: string,
-): HTMLElementTagNameMap[K] | null {
-  return document.getElementById(id) as HTMLElementTagNameMap[K] | null;
-}
-
 function renderSessionCard(session: SessionListItem): string {
   const isProcessing = PROCESSING_STATUSES.includes(session.status);
   const badgeClass = `badge badge--${session.status.toLowerCase()}`;
@@ -132,12 +127,6 @@ function renderSessionCard(session: SessionListItem): string {
       ${retryButton}
     </li>
   `;
-}
-
-function escapeHtml(text: string): string {
-  const div = document.createElement("div");
-  div.textContent = text;
-  return div.innerHTML;
 }
 
 function renderSessionList(sessions: SessionListItem[]): void {

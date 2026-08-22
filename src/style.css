@@ -297,3 +297,132 @@ body {
     opacity: 0.75;
   }
 }
+
+/* --- T-33: 세션 상세 화면 --- */
+
+.back-link {
+  display: inline-block;
+  margin-bottom: 0.75rem;
+  color: #4a7dff;
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+
+.session-detail__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  color: #666;
+  font-size: 0.9rem;
+  margin: 0.25rem 0 1rem;
+}
+
+#audio-player {
+  width: 100%;
+  margin-bottom: 1rem;
+}
+
+.tabs {
+  display: flex;
+  gap: 0.5rem;
+  border-bottom: 1px solid #e0e0e0;
+  margin-bottom: 1rem;
+}
+
+.tab-button {
+  padding: 0.5rem 1rem;
+  border: none;
+  background: none;
+  font-size: 0.95rem;
+  cursor: pointer;
+  color: #777;
+  border-bottom: 2px solid transparent;
+}
+
+.tab-button--active {
+  color: #1a1a1a;
+  font-weight: 600;
+  border-bottom-color: #4a7dff;
+}
+
+.export-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.btn--export {
+  margin-top: 0;
+  background: #eee;
+  color: #1a1a1a;
+}
+
+.btn--export:hover {
+  background: #ddd;
+}
+
+.summary-section {
+  margin-bottom: 1.25rem;
+}
+
+.summary-section h3 {
+  font-size: 1rem;
+  margin-bottom: 0.4rem;
+}
+
+.key-point-list,
+.segment-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.timestamp-link {
+  border: none;
+  background: #eef2ff;
+  color: #3355cc;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.85rem;
+  cursor: pointer;
+  margin-right: 0.4rem;
+}
+
+.timestamp-link:hover {
+  background: #dde5ff;
+}
+
+.code-snippet {
+  margin-bottom: 0.75rem;
+}
+
+.code-snippet pre {
+  background: #1a1a1a;
+  color: #f4f4f4;
+  padding: 0.75rem;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 0.85rem;
+}
+
+.code-snippet__desc {
+  font-size: 0.85rem;
+  color: #666;
+  margin: 0.3rem 0 0;
+}
+
+@media (max-width: 480px) {
+  .export-buttons {
+    flex-direction: column;
+  }
+
+  .btn--export {
+    width: 100%;
+  }
+}

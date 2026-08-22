@@ -187,6 +187,18 @@ export async function exportSession(
   };
 }
 
+/**
+ * GET /api/v1/sessions/{id}/audio — 원본 오디오 스트리밍 URL (T-33).
+ *
+ * §5.2 원 스펙에는 없던 엔드포인트다 — 세션 상세 화면(T-33)의 `<audio>` 재생을 위해
+ * 백엔드에 새로 추가했다(`app/api/v1/sessions.py`). 이 함수는 fetch를 하지 않고
+ * `<audio src>`/`<a href>`에 바로 넣을 수 있는 URL 문자열만 만든다 — 브라우저가 알아서
+ * Range 요청을 보내며 스트리밍하므로 클라이언트 코드가 개입할 필요가 없다.
+ */
+export function getSessionAudioUrl(sessionId: string): string {
+  return `${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/audio`;
+}
+
 /** ⑧ DELETE /api/v1/sessions/{id} — 삭제 */
 export async function deleteSession(sessionId: string): Promise<void> {
   await requestJson<void>(`/sessions/${encodeURIComponent(sessionId)}`, {
