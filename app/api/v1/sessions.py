@@ -13,10 +13,11 @@ from __future__ import annotations
 
 import math
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, Form, Query, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session as DBSession
 
@@ -537,4 +538,30 @@ def export_session(
         content=content,
         media_type=EXPORT_MEDIA_TYPES[format],
         headers={"Content-Disposition": build_content_disposition(filename)},
+    )
+
+
+@router.get("/sessions/{session_id}/audio")
+def get_session_audio(
+    session_id: str,
+    db: Annotated[DBSession, Depends(get_db, scope="function")],
+) -> FileResponse:
+    """세션 원본 오디오 스트리밍 (T-33, US-21 "세그먼트 클릭 시 해당 시점 오디오 재생").
+
+    §5.2 원 스펙에는 없던 엔드포인트다 — 프론트 세션 상세 화면(T-33)이 `<audio>` 엘리먼트로
+    재생·탐색(seek)하려면 오디오 바이트를 내려줄 경로가 반드시 있어야 해서 추가했다.
+    `FileResponse`가 `Range` 요청(탐색 시 브라우저가 보냄)을 자동으로 처리해준다 — 직접
+    바이트 범위를 파싱할 필요가 없다.
+    """
+    session = _get_session_or_404(db, session_id)
+    if not session.audio_path or not Path(session.audio_path).is_file():
+        # §5.2에 없던 엔드포인트라 전용 에러 코드가 없다 — "이 세션에 대해 줄 게 없다"는
+        # 의미로 SESSION_NOT_FOUND를 재사용한다(세션 자체는 존재해도 파일이 없을 수 있음:
+        # 예를 들어 검증 실패로 롤백된 아주 오래된 레코드).
+        raise AppError("SESSION_NOT_FOUND")
+
+    return FileResponse(
+        session.audio_path,
+        media_type=session.mime_type,
+        content_disposition_type="inline",
     )
