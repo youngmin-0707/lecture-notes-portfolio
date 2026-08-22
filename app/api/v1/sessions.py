@@ -58,6 +58,7 @@ from app.schemas.session import (
     TranscriptDetailResponse,
     TranscriptInfoResponse,
     TranscriptSegmentResponse,
+    UpdateSessionRequest,
 )
 
 # §5.3⑤ summaryPreview: 목록에 본문을 싣지 않으려고 짧게 자른다.
@@ -343,7 +344,31 @@ def get_session_detail(
 ) -> SessionDetailResponse:
     """세션 상세 조회 (§5.3③). 처리 실패(FAILED)여도 HTTP 200을 반환한다."""
     session = _get_session_or_404(db, session_id)
+    return _build_session_detail_response(db, session)
 
+
+@router.patch("/sessions/{session_id}", response_model=SessionDetailResponse)
+def update_session_metadata(
+    session_id: str,
+    body: UpdateSessionRequest,
+    db: Annotated[DBSession, Depends(get_db, scope="function")],
+) -> SessionDetailResponse:
+    """제목/과목 수정 (§5.2 ⑪, P2). §5.3에 상세 스펙이 없어 기존 관례를 그대로 따른다:
+
+    부분 업데이트(요청에 포함된 필드만 갱신), 처리 중 상태와 무관하게 언제나 허용(메타데이터
+    수정은 파이프라인에 영향을 주지 않는다), 응답은 `GET /sessions/{id}`와 동일한 상세
+    구조(즉시 반영된 값을 화면에서 바로 확인할 수 있게).
+    """
+    session = _get_session_or_404(db, session_id)
+    if body.title is not None:
+        session.title = body.title
+    if body.course is not None:
+        session.course = body.course
+    db.flush()
+    return _build_session_detail_response(db, session)
+
+
+def _build_session_detail_response(db: DBSession, session: SessionModel) -> SessionDetailResponse:
     transcript = db.execute(
         select(Transcript).where(Transcript.session_id == session.id)
     ).scalar_one_or_none()

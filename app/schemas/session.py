@@ -2,7 +2,16 @@
 
 from __future__ import annotations
 
+from pydantic import Field
+
 from app.schemas.common import CamelModel, UtcDateTime
+
+
+class UpdateSessionRequest(CamelModel):
+    """PATCH /api/v1/sessions/{id} 요청 바디 (§5.2 ⑪, P2). 부분 업데이트 — 전부 선택."""
+
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    course: str | None = Field(default=None, max_length=100)
 
 
 class SessionCreateResponse(CamelModel):
