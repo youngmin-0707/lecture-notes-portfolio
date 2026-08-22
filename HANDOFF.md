@@ -1,12 +1,32 @@
-# 인수인계 — `lecture-notes` 백엔드 (2026-08-22 세션)
+# 인수인계 — `lecture-notes` 백엔드 (2026-08-22 세션, 야간 연속 세션 갱신)
 
 이 문서는 다음 세션(사람이든 새 Claude Code 세션이든)이 이어받을 때 참고할 현재 상태 요약이다.
 전체 요구사항은 `/Users/son/개발/연습장/docs/requirements/stt-transcription.md`가 원본이며,
 이 문서는 그 문서의 "지금 어디까지 됐는가"만 다룬다.
 
-## 1. 완료 상태: P0(그룹 A~D, T-01~T-20) 전부 완료
+## 0. 이어진 세션에서 갱신된 내용 (요약)
 
-git 커밋 9개, 테스트 169 passed / 1 skipped(실제 모델 로드 테스트, 수동 실행 시 통과 확인됨).
+- **LLM_MODEL을 계획대로 `qwen3:14b`로 복원**했다 (`ollama pull qwen3:14b` 완료, `.env`/
+  `.env.example`/`app/core/config.py` 3곳 갱신). §2의 옛 "임시 하향" 서술은 더 이상 유효하지
+  않다 — 지금은 원래 계획값이 기본값이다.
+- **T-22 완료**: 용어집 CRUD(`GET`/`POST /api/v1/glossary`, `DELETE /api/v1/glossary/{id}`) +
+  기본 용어 100개 시드 마이그레이션(`0d2fdadd5067_seed_default_glossary_terms.py`).
+- **T-23 완료**: 용어집 기반 전사 보정. 전사 전 `initial_prompt` 자동 생성(session.course
+  전용 + 전역 용어) + 전사 후 `text_corrected` 자동 채움(`app/glossary/correction.py`).
+  **`text_corrected`가 더 이상 항상 NULL이 아니다** — §4의 옛 "항상 NULL" 서술은 이제
+  틀렸다. 용어집이 비어 있으면 원본과 동일한 값이 채워진다(그래도 NULL은 아님).
+  - 설계 노트: 영어식 `\b` 단어 경계를 의도적으로 안 썼다. 한국어는 조사가 공백 없이
+    바로 붙어서("자바는", "자바가") `\b`를 걸면 정상 매칭까지 실패하는 걸 테스트로
+    확인했다 — 대신 "긴 별칭 우선 매칭" 정렬만으로 과잉 치환을 막는다.
+- 부수 발견: `tests/test_migrations.py`의 postgres 통합 테스트가 `conftest.py`의 세션
+  스코프 `engine` 픽스처와 같은 DB(`TEST_DATABASE_URL`)를 공유해, 새 테스트 파일 추가로
+  수집 순서가 바뀌면 서로의 테이블을 깨뜨리는 문제가 있었다. **전용 DB
+  (`<원래DB이름>_migrations_test`)를 런타임에 만들어 완전히 격리**하도록 고쳤다. 앞으로
+  이 파일을 건드릴 때는 이 격리 방식을 유지할 것 — 원래 DB를 다시 공유하게 되돌리면 같은
+  문제가 재발한다.
+- 테스트: **196 passed / 1 skipped** (이전 169 → 27개 순증, T-22/T-23 테스트 + 회귀 테스트).
+
+## 1. 완료 상태: P0(그룹 A~D, T-01~T-20) 전부 완료 + P1 그룹 E 일부(T-22, T-23)
 
 ```
 6dd876e T-01~04  기반 (설정/에러체계/ORM/마이그레이션)
@@ -18,6 +38,9 @@ a0a5bcd T-11     로컬 faster-whisper 실제 구현체
 16a5696 T-12     전사 오케스트레이션 + 상태 전이
 74ed93b T-13     GET /sessions/{id}, GET /sessions/{id}/transcript
 1d534b1 T-14~20  LlmProvider(Ollama) + 요약 오케스트레이션 + POST /process + 복구 스윕
+fe40604 chore    LLM_MODEL qwen3:8b → qwen3:14b 복원 (회선 정상화)
+4ea677e T-22     용어집 CRUD + 기본 용어 100개 시드
+96680fd T-23     용어집 기반 전사 보정 (프롬프트 바이어싱 + text_corrected)
 ```
 
 **실제 파일(`docs/녹음.m4a`, 18.3분 실사용 녹음)로 업로드→전사→요약 전체 파이프라인을 끝까지
@@ -31,10 +54,10 @@ a0a5bcd T-11     로컬 faster-whisper 실제 구현체
 - **Ollama 실행 중** (`ollama serve`, 백그라운드 nohup 프로세스, `127.0.0.1:11434`). CLI는 PATH에 없고
   `/Applications/Ollama.app/Contents/Resources/ollama` 절대경로로만 존재 — 앱 코드는 CLI가 아니라
   **HTTP API로만** 통신하도록 짜여 있다 (그대로 유지할 것).
-- **LLM_MODEL이 `qwen3:8b`로 임시 하향돼 있다** (원래 계획은 `qwen3:14b`, M4 Pro 24GB 기준 권장값).
-  2026-08-22 세션 중 네트워크가 매우 불안정해서(다운로드 도중 진행률이 리셋되는 현상 반복) 안전하게
-  `qwen3:8b`로 낮췄다. **회선이 정상화되면**: `ollama pull qwen3:14b` 받은 뒤 `.env`/`.env.example`/
-  `app/core/config.py` 3곳의 `LLM_MODEL` 값만 `qwen3:14b`로 바꾸면 끝 (코드 변경 없음).
+- **LLM_MODEL은 `qwen3:14b`(원래 계획값, M4 Pro 24GB 기준 권장)로 복원 완료됨** (§0 참고).
+  2026-08-22 세션 초반엔 네트워크 불안정으로 `qwen3:8b`로 임시 하향했었으나, 같은 세션 안에서
+  회선이 정상화되어 `ollama pull qwen3:14b` 완료 후 복원했다. `qwen3:8b`도 로컬에 남아있으니
+  (`ollama list`) 필요하면 `.env`의 `LLM_MODEL`만 바꿔 언제든 되돌릴 수 있다.
 - **PostgreSQL 테스트 컨테이너가 떠 있다** (`docker compose -f docker-compose.test.yml up -d`, 포트 5433).
   테스트 실행 시 반드시 이렇게: `TEST_DATABASE_URL=postgresql+psycopg2://postgres:postgres@localhost:5433/signup_test .venv/bin/pytest`
   (⚠️ `tests/conftest.py`의 기본값은 `app_test`인데 실제 컨테이너 DB명은 `signup_test`다 — 둘이 다르다는
@@ -50,22 +73,26 @@ a0a5bcd T-11     로컬 faster-whisper 실제 구현체
 
 ## 3. 다음 단계 (요구사항 문서 §7 기준)
 
-- **그룹 E (P1, T-21~29)**: map-reduce 긴 전사 요약, 용어집 CRUD+시드 100개, 용어 보정, 세션
-  목록/삭제, 재요약, 검색, 내보내기(md/txt/srt), `/health` 확장, (선택)무료 티어 어댑터.
-  → §7.1 권장 순서상 T-22→T-23→T-21→T-24→T-25→T-26→T-27 순.
+- **그룹 E 나머지 (P1, T-21, T-24~29)**: T-22·T-23은 완료. §7.1 권장 순서상 다음은
+  **T-21(map-reduce 긴 전사 요약)** → T-24(세션 목록/삭제) → T-25(재요약) → T-26(검색) →
+  T-27(내보내기 md/txt/srt) → T-28(`/health` 확장) → T-29(선택, 무료 티어 어댑터).
 - **그룹 F (P1~P2)**: 프론트엔드 전체 (지금까지 API만 있고 화면 없음).
 - **그룹 G 나머지**: T-36(오프라인 검증), T-37(서버 재시작 복구 실측), T-38(보안 점검),
   T-39(용어 정확도 측정), T-40(E2E), T-41(실사용 리허설)은 프론트/실사용 기능이 갖춰진 뒤가 자연스럽다.
 
 ## 4. 알려진 트레이드오프 / 기술 부채 (의도적으로 남긴 것들)
 
-- `text_corrected`는 항상 NULL (용어집 보정은 T-23에서 구현 예정, 지금은 `GET .../transcript`가
-  `corrected=true` 요청에도 `text_raw`로 폴백).
 - map-reduce(T-21) 미구현 — 현재는 `OLLAMA_NUM_CTX=8192`로 여유를 두는 것으로만 대응. 훨씬 긴 강의
-  (60분+)에서 컨텍스트 초과 여부는 아직 실측 안 됨 — 그룹 E 착수 시 다음 벤치마크 대상.
-  (이번에 쓴 18분 샘플은 5,411자로 여유 있게 들어갔다.)
+  (60분+)에서 컨텍스트 초과 여부는 아직 실측 안 됨 — **T-21 착수 시 가장 먼저 벤치마크할 대상.**
+  (18분 샘플은 5,411자로 여유 있게 들어갔다.)
 - `db/session.py`는 dialect 중립(SQLite/PostgreSQL) 구조로 돼 있음 — 새 쿼리 짤 때 postgres 전용
   문법(JSONB 연산자 등) 쓰지 않도록 주의.
+- 용어집 API에 `PATCH`(수정)가 없다 — 요구사항(§5.3 ⑩)에도 없어서 의도적으로 뺐다. 별칭을
+  고치려면 삭제 후 재생성해야 한다.
+- 용어집 보정(T-23)은 `transcript_segments.text`(세그먼트별 텍스트)는 건드리지 않는다 —
+  `transcripts.text_corrected`(전체 텍스트)만 보정한다. `GET .../transcript`의 `segments[]`는
+  `corrected` 쿼리 파라미터와 무관하게 항상 원본 그대로 반환된다 (T-13 구현 당시부터의 기존
+  동작, T-23에서 바꾸지 않았다).
 
 ## 5. 실측 중 발견한 이슈 (그룹 D 최종 보고서에서 확인, 중요)
 
