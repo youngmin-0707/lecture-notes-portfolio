@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.v1.glossary import router as glossary_router
 from app.api.v1.sessions import router as sessions_router
 from app.core.config import settings
 from app.core.errors import register_exception_handlers
@@ -87,6 +88,7 @@ async def add_request_id(request: Request, call_next):
 register_exception_handlers(app)
 
 app.include_router(sessions_router, prefix="/api/v1")
+app.include_router(glossary_router, prefix="/api/v1")
 
 
 @app.get("/health")
