@@ -54,15 +54,33 @@ def _load_model(model_size: str, device: str, compute_type: str, download_root: 
             device,
             compute_type,
         )
+        # 모델이 이미 캐시돼 있으면 `local_files_only=True`로 완전 오프라인으로 로드한다.
+        # 이게 없으면 huggingface_hub이 캐시가 있어도 최신인지 확인하려고 CDN에 접속을
+        # 시도한다 — 실측(T-36)으로 확인된 실제 오프라인 모드 위반이었다. 캐시가 없는
+        # 최초 실행(§3.2 "모델 다운로드: 최초 1회")까지 막으면 안 되므로, 오프라인 로드가
+        # 실패할 때만 네트워크를 쓰는 경로로 폴백한다.
         try:
             model = WhisperModel(
                 model_size,
                 device=device,
                 compute_type=compute_type,
                 download_root=download_root,
+                local_files_only=True,
             )
-        except Exception as exc:  # noqa: BLE001 — 다운로드/로드 실패는 모두 모델 준비 실패다.
-            raise AppError("STT_MODEL_UNAVAILABLE") from exc
+        except Exception:  # noqa: BLE001 — 캐시 미존재를 포함해 어떤 이유든 폴백 대상이다.
+            logger.info(
+                "Model not found locally, falling back to network download: model=%s",
+                model_size,
+            )
+            try:
+                model = WhisperModel(
+                    model_size,
+                    device=device,
+                    compute_type=compute_type,
+                    download_root=download_root,
+                )
+            except Exception as exc:  # noqa: BLE001 — 다운로드/로드 실패는 모두 모델 준비 실패다.
+                raise AppError("STT_MODEL_UNAVAILABLE") from exc
 
         _model_cache[cache_key] = model
         return model
