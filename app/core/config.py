@@ -46,7 +46,8 @@ class Settings(BaseSettings):
 
     # --- LLM (§0 D5, §3.4) ---
     LLM_PROVIDER: str = "ollama"
-    LLM_MODEL: str = "qwen3:14b"
+    # 권장값은 qwen3:14b(M4 Pro/24GB 기준)이나, 2026-08-22 네트워크 지연으로 임시 qwen3:8b.
+    LLM_MODEL: str = "qwen3:8b"
     OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
     # 처리 종료 직후 RAM을 반환하기 위해 짧게 유지한다 (§0 D13).
     OLLAMA_KEEP_ALIVE: str = "30s"
