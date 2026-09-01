@@ -7,8 +7,16 @@
 import type { ApiErrorBody, ApiErrorDetail } from "./types.ts";
 
 const DEFAULT_SERVER_BASE_URL = "http://127.0.0.1:8765";
+// Tailscale(2026-08-29)로 접속했을 때 백엔드가 노출되는 포트 — `tailscale serve --https=8765`.
+const TAILSCALE_BACKEND_PORT = 8765;
 
 function resolveServerBaseUrl(): string {
+  // 이 페이지 자체가 tailnet 도메인(*.ts.net)으로 로드됐다면, 127.0.0.1은 회사 데스크탑
+  // 자신의 로컬호스트를 가리키게 되어 집 백엔드에 닿지 않는다 — 같은 tailnet 호스트명으로,
+  // 포트만 백엔드 것으로 바꿔서 호출한다.
+  if (typeof window !== "undefined" && window.location.hostname.endsWith(".ts.net")) {
+    return `https://${window.location.hostname}:${TAILSCALE_BACKEND_PORT}`;
+  }
   const configured = import.meta.env.VITE_API_BASE_URL;
   const base = configured && configured.trim().length > 0 ? configured : DEFAULT_SERVER_BASE_URL;
   return base.replace(/\/+$/, "");

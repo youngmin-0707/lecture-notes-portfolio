@@ -14,6 +14,7 @@ import { getUserErrorMessage } from "../errors/errorMessages.ts";
 import type { RouteParams } from "../router/router.ts";
 import { el, escapeHtml } from "../utils/dom.ts";
 import { formatDate, formatDuration, formatTimestamp } from "../utils/format.ts";
+import { renderMarkdown } from "../utils/markdown.ts";
 import { PROCESSING_STATUSES, STATUS_LABELS } from "../utils/status.ts";
 import { renderShell } from "./shell.ts";
 
@@ -53,24 +54,8 @@ function jumpToAudio(seconds: number): void {
   });
 }
 
-function renderSummaryTab(summary: SessionSummaryDetail | null): string {
-  if (!summary) {
-    return `<p class="empty-state">아직 요약이 없습니다.</p>`;
-  }
-
-  const keyPointsHtml = summary.keyPoints.length
-    ? `<ul class="key-point-list">${summary.keyPoints
-        .map(
-          (kp) => `
-            <li>
-              <button type="button" class="timestamp-link" data-jump="${kp.atSeconds}">[${formatTimestamp(kp.atSeconds)}]</button>
-              ${escapeHtml(kp.text)}
-            </li>
-          `,
-        )
-        .join("")}</ul>`
-    : `<p>없음</p>`;
-
+/** 2026-08-29 이전에 만들어진 요약(자유형식 본문이 없음)의 개념/코드/과제 섹션. */
+function renderLegacySections(summary: SessionSummaryDetail): string {
   const conceptsHtml = summary.concepts.length
     ? `<ul>${summary.concepts
         .map((c) => `<li><strong>${escapeHtml(c.term)}</strong>: ${escapeHtml(c.description)}</li>`)
@@ -99,7 +84,53 @@ function renderSummaryTab(summary: SessionSummaryDetail | null): string {
         .join("")}</ul>`
     : `<p>없음</p>`;
 
+  return `
+    <section class="summary-section">
+      <h3>개념 정리</h3>
+      ${conceptsHtml}
+    </section>
+    <section class="summary-section">
+      <h3>코드 / 명령어</h3>
+      ${codeHtml}
+    </section>
+    <section class="summary-section">
+      <h3>과제 및 공지</h3>
+      ${actionHtml}
+    </section>
+  `;
+}
+
+function renderSummaryTab(summary: SessionSummaryDetail | null): string {
+  if (!summary) {
+    return `<p class="empty-state">아직 요약이 없습니다.</p>`;
+  }
+
+  const keyPointsHtml = summary.keyPoints.length
+    ? `<ul class="key-point-list">${summary.keyPoints
+        .map(
+          (kp) => `
+            <li>
+              <button type="button" class="timestamp-link" data-jump="${kp.atSeconds}">[${formatTimestamp(kp.atSeconds)}]</button>
+              ${escapeHtml(kp.text)}
+            </li>
+          `,
+        )
+        .join("")}</ul>`
+    : `<p>없음</p>`;
+
   const keywordsText = summary.keywords.length ? summary.keywords.join(", ") : "없음";
+
+  // 자유형식 본문이 있으면 그걸 주 콘텐츠로 렌더링하고, 없는(2026-08-29 이전) 요약은
+  // 예전 개념/코드/과제 구조화 섹션으로 폴백한다. HMR로 갱신된 페이지가 API 응답 갱신 전
+  // 필드를 잠깐 놓칠 수도 있어(구버전 캐시 등) undefined도 방어적으로 다룬다.
+  const detailedNotes = summary.detailedNotesMarkdown ?? "";
+  const bodyHtml = detailedNotes.trim()
+    ? `
+      <section class="summary-section">
+        <div class="notes-body">${renderMarkdown(detailedNotes)}</div>
+      </section>
+    `
+    : renderLegacySections(summary);
 
   return `
     <div class="summary-content">
@@ -111,18 +142,7 @@ function renderSummaryTab(summary: SessionSummaryDetail | null): string {
         <h3>핵심 주제</h3>
         ${keyPointsHtml}
       </section>
-      <section class="summary-section">
-        <h3>개념 정리</h3>
-        ${conceptsHtml}
-      </section>
-      <section class="summary-section">
-        <h3>코드 / 명령어</h3>
-        ${codeHtml}
-      </section>
-      <section class="summary-section">
-        <h3>과제 및 공지</h3>
-        ${actionHtml}
-      </section>
+      ${bodyHtml}
       <section class="summary-section">
         <h3>복습 키워드</h3>
         <p>${escapeHtml(keywordsText)}</p>
@@ -326,7 +346,10 @@ function renderTitleAndMeta(session: SessionDetailResponse): string {
 }
 
 function renderSessionShell(session: SessionDetailResponse): string {
-  const audioUrl = getSessionAudioUrl(session.sessionId);
+  // 요약까지 끝나면 원본 오디오를 지우므로(2026-08-29), 없을 땐 빈 플레이어 대신 안내만 보여준다.
+  const audioSection = session.audioAvailable
+    ? `<audio id="audio-player" controls preload="none" src="${getSessionAudioUrl(session.sessionId)}"></audio>`
+    : `<p class="audio-unavailable-notice">오디오 원본은 요약 완료 후 자동으로 삭제됩니다. 아래 텍스트로 확인해주세요.</p>`;
 
   const processingNotice = PROCESSING_STATUSES.includes(session.status)
     ? `<p class="status status--loading">처리 중입니다... 자동으로 갱신됩니다.</p>`
@@ -343,7 +366,7 @@ function renderSessionShell(session: SessionDetailResponse): string {
     ${processingNotice}
     ${failedNotice}
 
-    <audio id="audio-player" controls preload="none" src="${audioUrl}"></audio>
+    ${audioSection}
 
     <div class="tabs">
       <button type="button" id="tab-summary" class="tab-button" data-tab="summary">요약</button>
@@ -405,6 +428,7 @@ export function renderSessionDetailPage(params: RouteParams): void {
   activeTab = "summary";
   cachedTranscript = null;
   lastRenderedSession = null;
+  isEditingMeta = false;
 
   const sessionId = params.id;
   if (!sessionId) {

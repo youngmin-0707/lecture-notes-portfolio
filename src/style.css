@@ -150,6 +150,39 @@ body {
   transition: width 0.15s ease;
 }
 
+/* --- 2026-08-30: 세션 목록 필터 --- */
+
+.session-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.75rem 0 0;
+}
+
+.session-filters__query {
+  flex: 1 1 200px;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: 0.9rem;
+}
+
+.session-filters__date-label {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+  color: #555;
+}
+
+.session-filters__date-label input {
+  padding: 0.3rem 0.4rem;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: 0.85rem;
+}
+
 /* --- T-31: 세션 목록 --- */
 
 .session-list {
@@ -323,6 +356,12 @@ body {
   margin-bottom: 1rem;
 }
 
+.audio-unavailable-notice {
+  font-size: 0.85rem;
+  color: #666;
+  margin: 0.25rem 0 1rem;
+}
+
 .tabs {
   display: flex;
   gap: 0.5rem;
@@ -415,6 +454,68 @@ body {
   font-size: 0.85rem;
   color: #666;
   margin: 0.3rem 0 0;
+}
+
+.notes-body {
+  line-height: 1.6;
+  overflow-wrap: break-word;
+}
+
+.notes-body h2,
+.notes-body h3,
+.notes-body h4 {
+  margin: 1.25rem 0 0.5rem;
+}
+
+.notes-body h2:first-child,
+.notes-body h3:first-child,
+.notes-body h4:first-child {
+  margin-top: 0;
+}
+
+.notes-body p {
+  margin: 0.5rem 0;
+}
+
+.notes-body ul,
+.notes-body ol {
+  margin: 0.4rem 0;
+  padding-left: 1.4rem;
+}
+
+.notes-body li {
+  margin-bottom: 0.25rem;
+}
+
+.notes-body code {
+  background: #f0f0f0;
+  padding: 0.1rem 0.3rem;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+
+.notes-body pre {
+  background: #1a1a1a;
+  color: #f4f4f4;
+  padding: 0.75rem;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 0.85rem;
+  margin: 0.6rem 0;
+}
+
+.notes-body pre code {
+  background: none;
+  padding: 0;
+}
+
+.notes-callout {
+  background: #fff8e6;
+  border-left: 3px solid #e6b800;
+  padding: 0.6rem 0.8rem;
+  border-radius: 4px;
+  margin: 0.6rem 0;
+  font-size: 0.95rem;
 }
 
 @media (max-width: 480px) {

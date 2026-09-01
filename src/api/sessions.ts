@@ -136,6 +136,9 @@ export async function listSessions(
   const qs = toQueryString({
     course: params.course,
     status: params.status,
+    q: params.q,
+    date_from: params.dateFrom,
+    date_to: params.dateTo,
     page: params.page,
     size: params.size,
   });

@@ -108,10 +108,15 @@ export interface SessionSummaryDetail {
   summaryId: string;
   contentMarkdown: string;
   keyPoints: SummaryKeyPoint[];
+  /** @deprecated 2026-08-29 자유형식 본문(detailedNotesMarkdown) 도입 이전 요약의 유산 필드. */
   concepts: SummaryConcept[];
+  /** @deprecated 2026-08-29 자유형식 본문(detailedNotesMarkdown) 도입 이전 요약의 유산 필드. */
   codeSnippets: SummaryCodeSnippet[];
+  /** @deprecated 2026-08-29 자유형식 본문(detailedNotesMarkdown) 도입 이전 요약의 유산 필드. */
   actionItems: SummaryActionItem[];
   keywords: string[];
+  /** LLM이 강의 내용에 맞게 자유롭게 구성한 마크다운 본문 (2026-08-29~). */
+  detailedNotesMarkdown: string;
   provider: string;
   providerModel: string;
   createdAt: string;
@@ -130,6 +135,8 @@ export interface SessionDetailResponse {
   transcript: SessionTranscriptInfo;
   summary: SessionSummaryDetail | null;
   pollAfterSeconds?: number;
+  /** 요약까지 끝나면 오디오 원본을 지우므로(2026-08-29), 재생 가능 여부를 명시적으로 알려준다. */
+  audioAvailable: boolean;
 }
 
 /** ④ GET /sessions/{id}/transcript 응답 */
@@ -174,6 +181,12 @@ export interface SessionListResponse {
 export interface ListSessionsParams {
   course?: string;
   status?: SessionStatus;
+  /** 제목 또는 최신 요약 내용 검색 (2026-08-30). */
+  q?: string;
+  /** YYYY-MM-DD, recorded_at 기준 이 날짜 00:00부터. */
+  dateFrom?: string;
+  /** YYYY-MM-DD, recorded_at 기준 이 날짜 23:59:59까지. */
+  dateTo?: string;
   page?: number;
   size?: number;
 }

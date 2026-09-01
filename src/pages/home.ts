@@ -28,6 +28,12 @@ let currentGeneration = 0;
 let isUploading = false;
 const retryingIds = new Set<string>();
 
+// --- 세션 목록 필터 (2026-08-30): 제목/내용 검색 + 날짜 범위 ---
+let filterQuery = "";
+let filterDateFrom = "";
+let filterDateTo = "";
+let filterDebounceId: number | null = null;
+
 // --- T-32: 브라우저 녹음(MediaRecorder) 상태 ---
 let mediaRecorder: MediaRecorder | null = null;
 let recordedChunks: Blob[] = [];
@@ -98,11 +104,17 @@ function renderSessionCard(session: SessionListItem): string {
   `;
 }
 
+function hasActiveFilter(): boolean {
+  return Boolean(filterQuery.trim() || filterDateFrom || filterDateTo);
+}
+
 function renderSessionList(sessions: SessionListItem[]): void {
   const target = el("session-list");
   if (!target) return;
   if (sessions.length === 0) {
-    target.innerHTML = `<p class="empty-state">아직 업로드한 강의가 없습니다.</p>`;
+    target.innerHTML = hasActiveFilter()
+      ? `<p class="empty-state">조건에 맞는 강의가 없습니다.</p>`
+      : `<p class="empty-state">아직 업로드한 강의가 없습니다.</p>`;
     return;
   }
   target.innerHTML = `<ul class="session-list">${sessions.map(renderSessionCard).join("")}</ul>`;
@@ -122,7 +134,12 @@ function setDropzoneBusy(busy: boolean): void {
 
 async function refreshSessions(generation: number): Promise<SessionListItem[]> {
   try {
-    const result = await listSessions({ size: 20 });
+    const result = await listSessions({
+      size: 20,
+      q: filterQuery.trim() || undefined,
+      dateFrom: filterDateFrom || undefined,
+      dateTo: filterDateTo || undefined,
+    });
     if (generation !== currentGeneration) return result.items;
     renderSessionList(result.items);
     return result.items;
@@ -378,6 +395,42 @@ function wireDropzone(generation: number): void {
   });
 }
 
+function wireFilters(generation: number): void {
+  const queryInput = el<"input">("filter-query");
+  const fromInput = el<"input">("filter-date-from");
+  const toInput = el<"input">("filter-date-to");
+  const resetButton = el<"button">("filter-reset");
+
+  queryInput?.addEventListener("input", () => {
+    filterQuery = queryInput.value;
+    if (filterDebounceId !== null) window.clearTimeout(filterDebounceId);
+    // 검색어는 입력할 때마다 요청을 쏘지 않고 타이핑이 잠깐 멈췄을 때만 서버에 물어본다.
+    filterDebounceId = window.setTimeout(() => {
+      void refreshSessions(generation);
+    }, 300);
+  });
+
+  fromInput?.addEventListener("change", () => {
+    filterDateFrom = fromInput.value;
+    void refreshSessions(generation);
+  });
+
+  toInput?.addEventListener("change", () => {
+    filterDateTo = toInput.value;
+    void refreshSessions(generation);
+  });
+
+  resetButton?.addEventListener("click", () => {
+    filterQuery = "";
+    filterDateFrom = "";
+    filterDateTo = "";
+    if (queryInput) queryInput.value = "";
+    if (fromInput) fromInput.value = "";
+    if (toInput) toInput.value = "";
+    void refreshSessions(generation);
+  });
+}
+
 function wireRetryButtons(generation: number): void {
   const list = el<"div">("session-list");
   if (!list) return;
@@ -413,6 +466,13 @@ export function renderHomePage(): void {
   const generation = ++currentGeneration;
   isUploading = false;
   retryingIds.clear();
+  filterQuery = "";
+  filterDateFrom = "";
+  filterDateTo = "";
+  if (filterDebounceId !== null) {
+    window.clearTimeout(filterDebounceId);
+    filterDebounceId = null;
+  }
   if (mediaRecorder) {
     mediaRecorder.stream.getTracks().forEach((track) => track.stop());
     mediaRecorder = null;
@@ -440,6 +500,23 @@ export function renderHomePage(): void {
       </section>
       <section>
         <h2>최근 세션</h2>
+        <div class="session-filters">
+          <input
+            type="search"
+            id="filter-query"
+            class="session-filters__query"
+            placeholder="제목 또는 내용 검색"
+          />
+          <label class="session-filters__date-label">
+            <span>부터</span>
+            <input type="date" id="filter-date-from" />
+          </label>
+          <label class="session-filters__date-label">
+            <span>까지</span>
+            <input type="date" id="filter-date-to" />
+          </label>
+          <button type="button" id="filter-reset" class="btn btn--export">초기화</button>
+        </div>
         <div id="session-list"><p class="status status--loading">불러오는 중...</p></div>
       </section>
       <div id="health-status"></div>
@@ -448,6 +525,7 @@ export function renderHomePage(): void {
 
   wireDropzone(generation);
   wireRecorder(generation);
+  wireFilters(generation);
   wireRetryButtons(generation);
   renderHealthWidget();
 
