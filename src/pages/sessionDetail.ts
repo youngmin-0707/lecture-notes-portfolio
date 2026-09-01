@@ -1,11 +1,14 @@
 // 세션 상세 화면 (T-33, US-21): 요약/전사 탭 + 오디오 재생·탐색 + 다운로드.
 import {
+  createQuiz,
   exportSession,
+  getQuiz,
   getSession,
   getSessionAudioUrl,
   getTranscript,
   updateSession,
   type ExportFormat,
+  type QuizResponse,
   type SessionDetailResponse,
   type SessionSummaryDetail,
   type TranscriptResponse,
@@ -20,7 +23,7 @@ import { renderShell } from "./shell.ts";
 
 const POLL_INTERVAL_MS = 5000;
 
-type Tab = "summary" | "transcript";
+type Tab = "summary" | "transcript" | "quiz";
 
 // home.ts와 동일한 이유로 세대(generation) 토큰을 쓴다 — 라우터에 unmount 훅이 없어서,
 // 다른 페이지로 이동했다가 돌아와도 이전 폴링이 안 멈추는 걸 막는다.
@@ -28,6 +31,16 @@ let currentGeneration = 0;
 let activeTab: Tab = "summary";
 let cachedTranscript: TranscriptResponse | null = null;
 let isEditingMeta = false;
+
+// 복습 탭(2026-09-01 신규) 상태. `cachedQuiz`가 `null`인 것과 "아직 조회 안 함"을
+// 구분해야 해서(전자는 "생성 버튼을 보여줄 시점", 후자는 "일단 조회부터") `quizFetched`를
+// 따로 둔다 — 전사 탭의 `cachedTranscript !== null` 단일 체크와 달리, 여기는 null 자체가
+// 유효한 "아직 생성 안 됨" 상태이기 때문이다.
+let cachedQuiz: QuizResponse | null = null;
+let quizFetched = false;
+let isCreatingQuiz = false;
+let quizActionError: string | null = null;
+let revealedQuestions = new Set<number>();
 
 /**
  * `contentMarkdown`의 "## 한 줄 요약" 섹션만 뽑는다 — 백엔드(app/api/v1/sessions.py의
@@ -182,20 +195,87 @@ function renderTranscriptTab(transcript: TranscriptResponse | null): string {
   `;
 }
 
+function renderQuizTab(quiz: QuizResponse | null): string {
+  const statusHtml = quizActionError
+    ? `<p class="status status--error">${escapeHtml(quizActionError)}</p>`
+    : "";
+
+  if (!quiz) {
+    return `
+      ${statusHtml}
+      <div class="quiz-empty">
+        <p class="empty-state">아직 복습 문제가 없습니다.</p>
+        <button type="button" id="quiz-generate-button" class="btn btn--export" ${isCreatingQuiz ? "disabled" : ""}>
+          ${isCreatingQuiz ? "생성 중..." : "복습 문제 만들기"}
+        </button>
+      </div>
+    `;
+  }
+
+  if (quiz.status === "GENERATING") {
+    return `${statusHtml}<p class="status status--loading">복습 문제를 만드는 중입니다...</p>`;
+  }
+
+  if (quiz.status === "FAILED") {
+    return `
+      ${statusHtml}
+      <div class="quiz-empty">
+        <p class="status status--error">복습 문제 생성에 실패했습니다: ${escapeHtml(quiz.errorMessage ?? "")}</p>
+        <button type="button" id="quiz-generate-button" class="btn btn--export" ${isCreatingQuiz ? "disabled" : ""}>
+          ${isCreatingQuiz ? "생성 중..." : "다시 생성"}
+        </button>
+      </div>
+    `;
+  }
+
+  if (quiz.questions.length === 0) {
+    return `${statusHtml}<p class="empty-state">생성된 문제가 없습니다.</p>`;
+  }
+
+  const itemsHtml = quiz.questions
+    .map((q, i) => {
+      const revealed = revealedQuestions.has(i);
+      return `
+        <li class="quiz-item">
+          <p class="quiz-item__question">Q${i + 1}. ${escapeHtml(q.question)}</p>
+          ${
+            revealed
+              ? `<p class="quiz-item__answer">${escapeHtml(q.answer)}</p>`
+              : `<button type="button" class="btn btn--export" data-quiz-reveal="${i}">정답 보기</button>`
+          }
+        </li>
+      `;
+    })
+    .join("");
+
+  return `
+    ${statusHtml}
+    <ul class="quiz-list">${itemsHtml}</ul>
+    <button type="button" id="quiz-generate-button" class="btn btn--export" ${isCreatingQuiz ? "disabled" : ""}>
+      ${isCreatingQuiz ? "생성 중..." : "복습 문제 다시 생성"}
+    </button>
+  `;
+}
+
 function renderTabContent(session: SessionDetailResponse): void {
   const target = el("tab-content");
   if (!target) return;
-  target.innerHTML =
-    activeTab === "summary"
-      ? renderSummaryTab(session.summary)
-      : renderTranscriptTab(cachedTranscript);
+  if (activeTab === "summary") {
+    target.innerHTML = renderSummaryTab(session.summary);
+  } else if (activeTab === "transcript") {
+    target.innerHTML = renderTranscriptTab(cachedTranscript);
+  } else {
+    target.innerHTML = renderQuizTab(cachedQuiz);
+  }
 }
 
 function updateTabButtons(): void {
   const summaryBtn = el<"button">("tab-summary");
   const transcriptBtn = el<"button">("tab-transcript");
+  const quizBtn = el<"button">("tab-quiz");
   summaryBtn?.classList.toggle("tab-button--active", activeTab === "summary");
   transcriptBtn?.classList.toggle("tab-button--active", activeTab === "transcript");
+  quizBtn?.classList.toggle("tab-button--active", activeTab === "quiz");
 }
 
 function setExportStatus(html: string): void {
@@ -242,13 +322,31 @@ function wireInteractions(sessionId: string, generation: number): void {
       if (tab && tab !== activeTab) {
         activeTab = tab;
         updateTabButtons();
-        void loadTranscriptIfNeeded(sessionId, generation).then(() => {
+        void Promise.all([
+          loadTranscriptIfNeeded(sessionId, generation),
+          loadQuizIfNeeded(sessionId, generation),
+        ]).then(() => {
           if (generation !== currentGeneration) return;
           // renderTabContent는 아래에서 세션 재조회 없이도 캐시된 정보로 다시 그린다.
           const cachedSession = lastRenderedSession;
           if (cachedSession) renderTabContent(cachedSession);
         });
       }
+      return;
+    }
+
+    const revealButton = target.closest<HTMLButtonElement>("[data-quiz-reveal]");
+    if (revealButton) {
+      const index = Number.parseInt(revealButton.dataset.quizReveal ?? "-1", 10);
+      if (index >= 0) {
+        revealedQuestions.add(index);
+        if (lastRenderedSession) renderTabContent(lastRenderedSession);
+      }
+      return;
+    }
+
+    if (target.closest("#quiz-generate-button")) {
+      void handleCreateQuiz(sessionId, generation);
       return;
     }
 
@@ -326,6 +424,73 @@ async function loadTranscriptIfNeeded(sessionId: string, generation: number): Pr
   }
 }
 
+/** 복습 탭을 처음 열 때 딱 한 번 조회한다 — `QUIZ_NOT_FOUND`(아직 생성 안 함)도 정상
+ * 흐름이라 `cachedQuiz = null`로만 남기고 계속 진행한다. */
+async function loadQuizIfNeeded(sessionId: string, generation: number): Promise<void> {
+  if (activeTab !== "quiz" || quizFetched) return;
+  await refreshQuiz(sessionId, generation);
+}
+
+async function refreshQuiz(sessionId: string, generation: number): Promise<void> {
+  try {
+    const quiz = await getQuiz(sessionId);
+    if (generation !== currentGeneration) return;
+    cachedQuiz = quiz;
+  } catch {
+    if (generation !== currentGeneration) return;
+    cachedQuiz = null;
+  }
+  if (generation !== currentGeneration) return;
+  quizFetched = true;
+  if (cachedQuiz?.status === "GENERATING") {
+    scheduleQuizPoll(sessionId, generation);
+  }
+}
+
+function scheduleQuizPoll(sessionId: string, generation: number): void {
+  window.setTimeout(() => {
+    void pollQuizOnce(sessionId, generation);
+  }, POLL_INTERVAL_MS);
+}
+
+async function pollQuizOnce(sessionId: string, generation: number): Promise<void> {
+  if (generation !== currentGeneration) return;
+  try {
+    const quiz = await getQuiz(sessionId);
+    if (generation !== currentGeneration) return;
+    cachedQuiz = quiz;
+  } catch {
+    if (generation !== currentGeneration) return;
+    cachedQuiz = null;
+  }
+  if (generation !== currentGeneration) return;
+  if (activeTab === "quiz") renderTabContent(lastRenderedSession as SessionDetailResponse);
+  if (cachedQuiz?.status === "GENERATING") {
+    scheduleQuizPoll(sessionId, generation);
+  }
+}
+
+async function handleCreateQuiz(sessionId: string, generation: number): Promise<void> {
+  if (isCreatingQuiz) return;
+  isCreatingQuiz = true;
+  quizActionError = null;
+  revealedQuestions = new Set();
+  if (activeTab === "quiz" && lastRenderedSession) renderTabContent(lastRenderedSession);
+
+  try {
+    await createQuiz(sessionId);
+    if (generation !== currentGeneration) return;
+    await refreshQuiz(sessionId, generation);
+  } catch (error) {
+    if (generation !== currentGeneration) return;
+    quizActionError = getUserErrorMessage(error);
+  } finally {
+    if (generation === currentGeneration) isCreatingQuiz = false;
+  }
+  if (generation !== currentGeneration) return;
+  if (activeTab === "quiz" && lastRenderedSession) renderTabContent(lastRenderedSession);
+}
+
 function renderTitleAndMeta(session: SessionDetailResponse): string {
   if (isEditingMeta) {
     return `
@@ -379,6 +544,7 @@ function renderSessionShell(session: SessionDetailResponse): string {
     <div class="tabs">
       <button type="button" id="tab-summary" class="tab-button" data-tab="summary">요약</button>
       <button type="button" id="tab-transcript" class="tab-button" data-tab="transcript">전사</button>
+      <button type="button" id="tab-quiz" class="tab-button" data-tab="quiz">복습</button>
     </div>
 
     <div class="export-buttons">
@@ -418,7 +584,10 @@ async function loadAndRender(sessionId: string, generation: number): Promise<voi
   updateTabButtons();
   wireInteractions(sessionId, generation);
 
-  await loadTranscriptIfNeeded(sessionId, generation);
+  await Promise.all([
+    loadTranscriptIfNeeded(sessionId, generation),
+    loadQuizIfNeeded(sessionId, generation),
+  ]);
   if (generation !== currentGeneration) return;
   renderTabContent(session);
 
@@ -437,6 +606,11 @@ export function renderSessionDetailPage(params: RouteParams): void {
   cachedTranscript = null;
   lastRenderedSession = null;
   isEditingMeta = false;
+  cachedQuiz = null;
+  quizFetched = false;
+  isCreatingQuiz = false;
+  quizActionError = null;
+  revealedQuestions = new Set();
 
   const sessionId = params.id;
   if (!sessionId) {

@@ -178,6 +178,31 @@ export interface SessionListResponse {
   totalPages: number;
 }
 
+/** ⑫⑬ POST/GET /sessions/{id}/quiz — 복습 문제 자동 생성 (2026-09-01 신규). */
+export type QuizStatus = "GENERATING" | "DONE" | "FAILED";
+
+export interface QuizQuestion {
+  question: string;
+  answer: string;
+}
+
+export interface QuizTriggerResponse {
+  sessionId: string;
+  status: QuizStatus;
+  pollAfterSeconds: number;
+}
+
+export interface QuizResponse {
+  quizId: string;
+  sessionId: string;
+  status: QuizStatus;
+  questions: QuizQuestion[];
+  errorCode?: string;
+  errorMessage?: string;
+  pollAfterSeconds?: number;
+  createdAt: string;
+}
+
 export interface ListSessionsParams {
   course?: string;
   status?: SessionStatus;

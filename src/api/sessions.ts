@@ -10,6 +10,8 @@ import type {
   ListSessionsParams,
   ProcessSessionRequest,
   ProcessSessionResponse,
+  QuizResponse,
+  QuizTriggerResponse,
   SessionDetailResponse,
   SessionListResponse,
   SummarizeSessionRequest,
@@ -207,6 +209,20 @@ export async function deleteSession(sessionId: string): Promise<void> {
   await requestJson<void>(`/sessions/${encodeURIComponent(sessionId)}`, {
     method: "DELETE",
   });
+}
+
+/** ⑫ POST /api/v1/sessions/{id}/quiz — 복습 문제 생성 시작 (2026-09-01 신규) */
+export async function createQuiz(sessionId: string): Promise<QuizTriggerResponse> {
+  return requestJson<QuizTriggerResponse>(`/sessions/${encodeURIComponent(sessionId)}/quiz`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+}
+
+/** ⑬ GET /api/v1/sessions/{id}/quiz — 가장 최근 복습 문제 조회 (2026-09-01 신규) */
+export async function getQuiz(sessionId: string): Promise<QuizResponse> {
+  return requestJson<QuizResponse>(`/sessions/${encodeURIComponent(sessionId)}/quiz`);
 }
 
 /** ⑪ PATCH /api/v1/sessions/{id} — 제목/과목 수정 (P2) */
