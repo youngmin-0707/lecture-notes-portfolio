@@ -50,6 +50,44 @@ def make_summary_json(**overrides: object) -> str:
     return json.dumps(data, ensure_ascii=False)
 
 
+# `app/llm/quiz_parsing.py`(2026-09-01, 복습 문제 자동 생성)가 요구하는 최소 필드를 채운,
+# 항상 파싱에 성공하는 기본 응답.
+DEFAULT_VALID_QUIZ_JSON = json.dumps(
+    {
+        "questions": [
+            {
+                "question": "이진 탐색 트리(BST)에서 삽입 연산의 시간 복잡도는 왜 O(log n)인가요?",
+                "answer": (
+                    "각 비교마다 왼쪽/오른쪽 서브트리로 탐색 범위가 절반씩 줄어들기 때문입니다"
+                    "(균형 잡힌 트리 기준)."
+                ),
+            },
+            {
+                "question": "중위 순회(in-order traversal)를 하면 왜 정렬된 순서로 값을 얻나요?",
+                "answer": (
+                    "왼쪽 서브트리 < 루트 < 오른쪽 서브트리 규칙을 만족하도록 저장되기 때문입니다."
+                ),
+            },
+            {
+                "question": "BST의 평균 시간 복잡도와 최악 시간 복잡도가 다른 이유는 무엇인가요?",
+                "answer": (
+                    "삽입 순서에 따라 트리가 한쪽으로 치우치면(편향 트리) 사실상 연결 리스트가 "
+                    "되어 O(n)까지 나빠질 수 있기 때문입니다."
+                ),
+            },
+        ],
+    },
+    ensure_ascii=False,
+)
+
+
+def make_quiz_json(**overrides: object) -> str:
+    """`DEFAULT_VALID_QUIZ_JSON`을 베이스로 일부 필드만 덮어써 JSON 문자열을 만든다."""
+    data = json.loads(DEFAULT_VALID_QUIZ_JSON)
+    data.update(overrides)
+    return json.dumps(data, ensure_ascii=False)
+
+
 class FakeLlmProvider(LlmProvider):
     """정상/429/타임아웃/형식위반을 결정론적으로 재현하는 Fake `LlmProvider`.
 
@@ -89,7 +127,14 @@ class FakeLlmProvider(LlmProvider):
     def provider_model(self) -> str:
         return self._provider_model
 
-    def generate(self, prompt: str) -> str:
+    def generate(
+        self,
+        prompt: str,
+        *,
+        response_schema: dict | None = None,
+        response_schema_name: str = "response",
+    ) -> str:
+        del response_schema, response_schema_name
         self.calls.append(prompt)
         index = min(self._call_index, len(self._responses) - 1)
         item = self._responses[index]

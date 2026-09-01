@@ -63,7 +63,16 @@ class OllamaLlmProvider(LlmProvider):
     def provider_model(self) -> str:
         return self._model
 
-    def generate(self, prompt: str) -> str:
+    def generate(
+        self,
+        prompt: str,
+        *,
+        response_schema: dict | None = None,
+        response_schema_name: str = "response",
+    ) -> str:
+        # 이 provider는 항상 느슨한 `format: "json"` 모드다 — `response_schema`는 프롬프트
+        # 자체가 출력 형식을 서술하는 경우(요약/복습 문제 공통)라면 굳이 필요 없어 무시한다.
+        del response_schema, response_schema_name
         payload = {
             "model": self._model,
             "messages": [{"role": "user", "content": prompt}],

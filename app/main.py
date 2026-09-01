@@ -17,7 +17,7 @@ from app.api.v1.sessions import router as sessions_router
 from app.core.config import settings
 from app.core.errors import register_exception_handlers
 from app.db.session import SessionLocal
-from app.pipeline.recovery import sweep_interrupted_sessions
+from app.pipeline.recovery import sweep_interrupted_quizzes, sweep_interrupted_sessions
 
 logger = logging.getLogger("app.main")
 
@@ -48,12 +48,19 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     db = SessionLocal()
     try:
         swept_ids = sweep_interrupted_sessions(db)
+        swept_quiz_ids = sweep_interrupted_quizzes(db)
         db.commit()
         if swept_ids:
             logger.warning(
                 "startup recovery sweep: %d session(s) marked FAILED(INTERRUPTED): %s",
                 len(swept_ids),
                 swept_ids,
+            )
+        if swept_quiz_ids:
+            logger.warning(
+                "startup recovery sweep: %d quiz(zes) marked FAILED(INTERRUPTED): %s",
+                len(swept_quiz_ids),
+                swept_quiz_ids,
             )
     except Exception:
         db.rollback()

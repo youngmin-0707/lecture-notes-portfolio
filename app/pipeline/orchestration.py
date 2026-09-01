@@ -18,10 +18,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session as DBSession
 
 from app.db.session import SessionLocal
-from app.models.enums import SessionStatus
+from app.models.enums import QuizStatus, SessionStatus
+from app.models.quiz import Quiz
 from app.models.session import Session
 from app.models.transcript import Transcript
 from app.pipeline.providers import build_llm_provider, build_stt_provider
+from app.pipeline.quiz import generate_quiz
 from app.pipeline.summarization import summarize_session
 from app.pipeline.transcription import transcribe_session
 
@@ -127,6 +129,58 @@ def resummarize_session_in_background(
         _mark_failed_after_crash(session_id)
     finally:
         db.close()
+
+
+def generate_quiz_in_background(
+    session_id: str, quiz_id: str, *, llm_provider_name: str | None = None
+) -> None:
+    """`BackgroundTasks` 진입점 — 복습 문제를 생성한다 (2026-09-01, §5.3⑫).
+
+    라우터가 이미 `quiz.status=GENERATING`으로 저장해 둔 행(`quiz_id`)을 찾아 채운다.
+    """
+    db = SessionLocal()
+    try:
+        session = db.get(Session, session_id)
+        quiz = db.get(Quiz, quiz_id)
+        if session is None or quiz is None:
+            logger.warning(
+                "generate_quiz_in_background: session or quiz not found session_id=%s quiz_id=%s",
+                session_id,
+                quiz_id,
+            )
+            return
+        llm_provider = build_llm_provider(llm_provider_name)
+        generate_quiz(db, session, quiz, llm_provider)
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception(
+            "generate_quiz_in_background: unexpected failure, session_id=%s quiz_id=%s",
+            session_id,
+            quiz_id,
+        )
+        _mark_quiz_failed_after_crash(quiz_id)
+    finally:
+        db.close()
+
+
+def _mark_quiz_failed_after_crash(quiz_id: str) -> None:
+    recovery_db = SessionLocal()
+    try:
+        quiz = recovery_db.get(Quiz, quiz_id)
+        if quiz is not None and quiz.status == QuizStatus.GENERATING.value:
+            quiz.status = QuizStatus.FAILED.value
+            quiz.error_code = "INTERNAL_ERROR"
+            quiz.error_message = "복습 문제 생성 중 예기치 못한 오류가 발생했습니다."
+            recovery_db.commit()
+    except Exception:
+        recovery_db.rollback()
+        logger.exception(
+            "generate_quiz_in_background: failed to mark quiz FAILED after crash, quiz_id=%s",
+            quiz_id,
+        )
+    finally:
+        recovery_db.close()
 
 
 def _mark_failed_after_crash(session_id: str) -> None:

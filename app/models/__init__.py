@@ -6,14 +6,17 @@
 
 from __future__ import annotations
 
-from app.models.enums import SessionSource, SessionStatus
+from app.models.enums import QuizStatus, SessionSource, SessionStatus
 from app.models.glossary import GlossaryTerm
+from app.models.quiz import Quiz
 from app.models.session import Session
 from app.models.summary import Summary
 from app.models.transcript import Transcript, TranscriptSegment
 
 __all__ = [
     "GlossaryTerm",
+    "Quiz",
+    "QuizStatus",
     "Session",
     "SessionSource",
     "SessionStatus",

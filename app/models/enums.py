@@ -24,3 +24,11 @@ class SessionSource(str, Enum):
 
     UPLOAD = "UPLOAD"
     RECORD = "RECORD"
+
+
+class QuizStatus(str, Enum):
+    """복습 문제(퀴즈) 생성 상태 (2026-09-01 신규, §2.4의 세션 상태와는 별개 축)."""
+
+    GENERATING = "GENERATING"
+    DONE = "DONE"
+    FAILED = "FAILED"

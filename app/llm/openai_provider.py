@@ -96,7 +96,17 @@ class OpenAiLlmProvider(LlmProvider):
     def provider_model(self) -> str:
         return self._model
 
-    def generate(self, prompt: str) -> str:
+    def generate(
+        self,
+        prompt: str,
+        *,
+        response_schema: dict | None = None,
+        response_schema_name: str = "lecture_summary",
+    ) -> str:
+        # `response_schema` 미지정 시 요약 스키마로 폴백한다 — 기존 호출부
+        # (`app/llm/summarizer.py`)가 인자 없이 호출해도 그대로 동작하도록 하기 위함.
+        # 복습 문제(`app/llm/quiz_generator.py`)는 항상 자신의 스키마를 명시적으로 넘긴다.
+        schema = response_schema if response_schema is not None else _SUMMARY_JSON_SCHEMA
         try:
             response = self._client.responses.create(
                 model=self._model,
@@ -104,8 +114,8 @@ class OpenAiLlmProvider(LlmProvider):
                 text={
                     "format": {
                         "type": "json_schema",
-                        "name": "lecture_summary",
-                        "schema": _SUMMARY_JSON_SCHEMA,
+                        "name": response_schema_name,
+                        "schema": schema,
                         "strict": True,
                     }
                 },

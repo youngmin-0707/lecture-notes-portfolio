@@ -30,8 +30,21 @@ class LlmProvider(ABC):
         """`summaries.provider_model`에 저장될 모델 식별자 (예: `qwen3:8b`)."""
 
     @abstractmethod
-    def generate(self, prompt: str) -> str:
+    def generate(
+        self,
+        prompt: str,
+        *,
+        response_schema: dict | None = None,
+        response_schema_name: str = "response",
+    ) -> str:
         """프롬프트를 LLM에 보내고 원문 텍스트 응답을 반환한다.
+
+        `response_schema`(2026-09-01 추가, JSON Schema)는 구조화 출력을 강제할 수 있는
+        provider(OpenAI)만 사용한다 — 요약(`app/llm/prompt.py`)과 복습 문제
+        (`app/llm/quiz_prompt.py`)처럼 프롬프트마다 출력 모양이 다를 수 있어, 스키마를
+        provider 안에 고정하지 않고 호출부(§ 상위 계층, `app/llm/summarizer.py`/
+        `app/llm/quiz_generator.py`)가 넘겨준다. 느슨한 JSON 모드만 지원하는 provider
+        (Ollama)는 이 인자를 무시해도 된다 — 프롬프트 자체에 출력 형식을 서술하고 있으므로.
 
         구현체는 실패를 항상 `app.core.errors.AppError`로 던져야 한다 (§5.1 에러 코드 규약).
         재시도 가능 여부(§3.4: 429/5xx/타임아웃만 재시도, 4xx는 즉시 실패)는

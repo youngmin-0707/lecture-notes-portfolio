@@ -21,7 +21,8 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DBSession
 
-from app.models.enums import SessionStatus
+from app.models.enums import QuizStatus, SessionStatus
+from app.models.quiz import Quiz
 from app.models.session import Session
 
 logger = logging.getLogger("app.pipeline.recovery")
@@ -53,6 +54,33 @@ def sweep_interrupted_sessions(db: DBSession) -> list[str]:
             "recovery sweep: session interrupted id=%s previous_status=%s",
             session.id,
             previous_status,
+        )
+
+    db.flush()
+    return swept_ids
+
+
+def sweep_interrupted_quizzes(db: DBSession) -> list[str]:
+    """`GENERATING` 상태로 남은 복습 문제를 전부 `FAILED(INTERRUPTED)`로 전이한다
+    (2026-09-01, 복습 문제 자동 생성 기능).
+
+    `sweep_interrupted_sessions()`와 동일한 이유(§3.6) — `BackgroundTasks`는 서버가
+    재시작되면 진행 중이던 작업을 그대로 잃는다. 이걸 안 하면 재시작 후에도
+    `POST /sessions/{id}/quiz`가 "이미 생성 중"(`INVALID_SESSION_STATE`)으로 거부되어
+    사용자가 영영 재시도할 수 없다.
+    """
+    quizzes = (
+        db.execute(select(Quiz).where(Quiz.status == QuizStatus.GENERATING.value)).scalars().all()
+    )
+
+    swept_ids: list[str] = []
+    for quiz in quizzes:
+        quiz.status = QuizStatus.FAILED.value
+        quiz.error_code = "INTERRUPTED"
+        quiz.error_message = _INTERRUPTED_MESSAGE
+        swept_ids.append(quiz.id)
+        logger.warning(
+            "recovery sweep: quiz interrupted id=%s session_id=%s", quiz.id, quiz.session_id
         )
 
     db.flush()

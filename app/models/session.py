@@ -67,3 +67,10 @@ class Session(Base):
         passive_deletes=True,
         order_by="Summary.created_at.desc()",
     )
+    quizzes: Mapped[list[Quiz]] = relationship(  # noqa: F821
+        "Quiz",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="Quiz.created_at.desc()",
+    )

@@ -32,15 +32,23 @@ from app.export import (
     render_srt_export,
     render_txt_export,
 )
-from app.models.enums import SessionSource, SessionStatus
+from app.models.enums import QuizStatus, SessionSource, SessionStatus
+from app.models.quiz import Quiz
 from app.models.session import Session as SessionModel
 from app.models.summary import Summary
 from app.models.transcript import Transcript
 from app.pipeline.orchestration import (
+    generate_quiz_in_background,
     resummarize_session_in_background,
     run_pipeline_in_background,
 )
 from app.pipeline.progress import ProgressInfo, get_progress
+from app.schemas.quiz import (
+    CreateQuizRequest,
+    QuizQuestionResponse,
+    QuizResponse,
+    QuizTriggerResponse,
+)
 from app.schemas.session import (
     ProcessRequest,
     ProcessResponse,
@@ -534,6 +542,102 @@ def get_session_transcript(
         text=text,
         segments=segments,
     )
+
+
+# 복습 탭 폴링 안내용 간격 (2026-09-01) — 단일 LLM 호출이라 요약보다 짧게 잡는다.
+QUIZ_POLL_AFTER_SECONDS = 3
+
+_QUIZ_ACTIVE_STATUSES = {QuizStatus.GENERATING.value}
+
+
+def _latest_quiz(db: DBSession, session_id: str) -> Quiz | None:
+    return db.execute(
+        select(Quiz).where(Quiz.session_id == session_id).order_by(Quiz.created_at.desc()).limit(1)
+    ).scalar_one_or_none()
+
+
+def _quiz_to_response(quiz: Quiz) -> QuizResponse:
+    return QuizResponse(
+        quiz_id=quiz.id,
+        session_id=quiz.session_id,
+        status=quiz.status,
+        questions=[
+            QuizQuestionResponse(question=q["question"], answer=q["answer"]) for q in quiz.questions
+        ],
+        error_code=quiz.error_code,
+        error_message=quiz.error_message,
+        poll_after_seconds=(
+            QUIZ_POLL_AFTER_SECONDS if quiz.status in _QUIZ_ACTIVE_STATUSES else None
+        ),
+        created_at=quiz.created_at,
+    )
+
+
+@router.post("/sessions/{session_id}/quiz", status_code=202, response_model=QuizTriggerResponse)
+def create_quiz(
+    session_id: str,
+    db: Annotated[DBSession, Depends(get_db, scope="function")],
+    background_tasks: BackgroundTasks,
+    body: Annotated[CreateQuizRequest | None, Body()] = None,
+) -> QuizTriggerResponse:
+    """복습 문제 생성을 시작한다 (2026-09-01 신규, §5.3⑫).
+
+    복습 탭을 처음 열 때(또는 "다시 생성" 버튼) 프론트가 호출한다 — 요약처럼 세션 처리
+    파이프라인에 자동으로 끼워 넣지 않고, 실제로 복습할 때만 LLM을 호출해 비용을 아낀다.
+    요약(`detailedNotesMarkdown`)이 아직 없으면 근거 자료가 없어 생성할 수 없다.
+    """
+    session = _get_session_or_404(db, session_id)
+    request = body or CreateQuizRequest()
+
+    has_summary = (
+        db.execute(
+            select(Summary.id)
+            .where(Summary.session_id == session.id, Summary.detailed_notes_markdown != "")
+            .limit(1)
+        ).first()
+        is not None
+    )
+    if not has_summary:
+        raise AppError("SUMMARY_NOT_READY")
+
+    existing = _latest_quiz(db, session.id)
+    if existing is not None and existing.status in _QUIZ_ACTIVE_STATUSES:
+        raise AppError("INVALID_SESSION_STATE")
+
+    quiz = Quiz(session_id=session.id, status=QuizStatus.GENERATING.value)
+    db.add(quiz)
+    db.flush()
+    db.refresh(quiz)
+
+    background_tasks.add_task(
+        generate_quiz_in_background,
+        session.id,
+        quiz.id,
+        llm_provider_name=request.llm_provider,
+    )
+
+    return QuizTriggerResponse(
+        session_id=session.id,
+        status=quiz.status,
+        poll_after_seconds=QUIZ_POLL_AFTER_SECONDS,
+    )
+
+
+@router.get("/sessions/{session_id}/quiz", response_model=QuizResponse)
+def get_session_quiz(
+    session_id: str,
+    db: Annotated[DBSession, Depends(get_db, scope="function")],
+) -> QuizResponse:
+    """가장 최근에 생성된 복습 문제를 조회한다 (2026-09-01 신규, §5.3⑬).
+
+    아직 한 번도 생성한 적이 없으면 `QUIZ_NOT_FOUND` — 프론트는 이를 "생성 버튼을 보여줄
+    시점"으로 해석한다(에러가 아니라 정상적인 초기 상태).
+    """
+    session = _get_session_or_404(db, session_id)
+    quiz = _latest_quiz(db, session.id)
+    if quiz is None:
+        raise AppError("QUIZ_NOT_FOUND")
+    return _quiz_to_response(quiz)
 
 
 @router.delete("/sessions/{session_id}", status_code=204)
