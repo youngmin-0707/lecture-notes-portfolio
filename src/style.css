@@ -194,6 +194,61 @@ body {
   gap: 0.6rem;
 }
 
+/* `.session-list`의 `display: flex`가 네이티브 `hidden` 속성의 `display: none`보다
+   명시도가 높아 그냥 두면 접힌 그룹이 계속 보인다 — 명시적으로 되살려준다. */
+.session-list[hidden] {
+  display: none;
+}
+
+/* --- 2026-09-01: 날짜별 그룹(폴더처럼 접기/펼치기) + "더 보기" --- */
+
+.session-group {
+  margin-top: 1.25rem;
+}
+
+.session-group:first-child {
+  margin-top: 0.75rem;
+}
+
+.session-group-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  padding: 0.3rem 0;
+  border: none;
+  background: none;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  text-align: left;
+}
+
+.session-group-heading:hover {
+  color: #333;
+}
+
+.session-group-heading__chevron {
+  font-size: 0.7rem;
+  color: #999;
+  width: 0.8rem;
+}
+
+.session-group-heading__count {
+  font-weight: 400;
+  color: #aaa;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+#load-more-button {
+  display: block;
+  margin: 1rem auto 0;
+}
+
 .session-card {
   padding: 0.75rem 1rem;
   border: 1px solid #e0e0e0;

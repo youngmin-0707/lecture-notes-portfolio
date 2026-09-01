@@ -34,6 +34,19 @@ let filterDateFrom = "";
 let filterDateTo = "";
 let filterDebounceId: number | null = null;
 
+// --- 세션 목록 정리 (2026-09-01): 날짜별 그룹 + "더 보기" ---
+// 세션이 쌓일수록 목록이 한눈에 안 들어오는 문제(사용자 실사용 피드백)를 해결하기 위해,
+// 목록을 오늘/어제/이번 주/이번 달/이전으로 나눠 보여주고, 처음엔 10개만 불러온 뒤
+// "더 보기"를 누를 때마다 10개씩 늘린다. `page`는 항상 1로 고정하고 `size`만 키우는
+// 방식이라 이미 불러온 항목의 순서가 요청마다 바뀌지 않는다(§5.3⑤ 최근 녹음순 정렬 그대로).
+const SESSION_PAGE_SIZE = 10;
+let visibleSessionCount = SESSION_PAGE_SIZE;
+
+// 날짜 그룹을 폴더처럼 접었다 펼 수 있게 한다(2026-09-01, 사용자 피드백으로 그룹 도입
+// 직후 추가) — 기본은 "오늘"만 펼친 채로 시작한다. 폴링/재조회로 목록이 다시 그려져도
+// 이 상태는 모듈 전역이라 유지된다(펼쳐둔 그룹이 5초마다 도로 접히지 않는다).
+let expandedGroups = new Set<DateGroup>(["오늘"]);
+
 // --- T-32: 브라우저 녹음(MediaRecorder) 상태 ---
 let mediaRecorder: MediaRecorder | null = null;
 let recordedChunks: Blob[] = [];
@@ -108,7 +121,52 @@ function hasActiveFilter(): boolean {
   return Boolean(filterQuery.trim() || filterDateFrom || filterDateTo);
 }
 
-function renderSessionList(sessions: SessionListItem[]): void {
+type DateGroup = "오늘" | "어제" | "이번 주" | "이번 달" | "이전";
+
+/** `recordedAt`을 오늘/어제/이번 주(최근 7일)/이번 달/이전으로 분류한다.
+ *
+ * 달력 기준 "이번 주"(월요일 시작 등)가 아니라 "최근 7일" 롤링 윈도우로 단순화했다 —
+ * 개인용 도구에서 ISO 주차 계산까지 정확히 맞출 필요는 없다고 판단했다.
+ */
+function dateGroupFor(recordedAt: string, now: Date): DateGroup {
+  const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const diffDays = Math.round((startOfDay(now) - startOfDay(new Date(recordedAt))) / 86_400_000);
+
+  if (diffDays <= 0) return "오늘";
+  if (diffDays === 1) return "어제";
+  if (diffDays < 7) return "이번 주";
+  const recorded = new Date(recordedAt);
+  if (recorded.getFullYear() === now.getFullYear() && recorded.getMonth() === now.getMonth()) {
+    return "이번 달";
+  }
+  return "이전";
+}
+
+/** 폴더 헤더(그룹명 + 개수) + 그 그룹에 속한 세션 카드 목록. 접혀있으면 `<ul>`에
+ * `hidden`을 붙인다 — 토글은 `wireSessionListInteractions()`가 이 `hidden`만 직접
+ * 뒤집으므로(재조회·재렌더 없이), 여기서 초기 상태만 `expandedGroups`와 맞춰두면 된다. */
+function renderSessionGroup(group: DateGroup, sessions: SessionListItem[]): string {
+  const expanded = expandedGroups.has(group);
+  return `
+    <section class="session-group">
+      <button
+        type="button"
+        class="session-group-heading"
+        data-group-toggle="${group}"
+        aria-expanded="${expanded}"
+      >
+        <span class="session-group-heading__chevron">${expanded ? "▾" : "▸"}</span>
+        ${group}
+        <span class="session-group-heading__count">${sessions.length}</span>
+      </button>
+      <ul class="session-list" data-group-list="${group}" ${expanded ? "" : "hidden"}>
+        ${sessions.map(renderSessionCard).join("")}
+      </ul>
+    </section>
+  `;
+}
+
+function renderSessionList(sessions: SessionListItem[], hasMore: boolean): void {
   const target = el("session-list");
   if (!target) return;
   if (sessions.length === 0) {
@@ -117,7 +175,30 @@ function renderSessionList(sessions: SessionListItem[]): void {
       : `<p class="empty-state">아직 업로드한 강의가 없습니다.</p>`;
     return;
   }
-  target.innerHTML = `<ul class="session-list">${sessions.map(renderSessionCard).join("")}</ul>`;
+
+  // 세션은 이미 최근 녹음순(§5.3⑤)이라, 순서대로 훑으며 그룹에 밀어넣기만 해도
+  // Map의 삽입 순서 = 오늘 → 어제 → 이번 주 → 이번 달 → 이전 순서가 그대로 유지된다.
+  const now = new Date();
+  const groups = new Map<DateGroup, SessionListItem[]>();
+  for (const session of sessions) {
+    const group = dateGroupFor(session.recordedAt, now);
+    const bucket = groups.get(group);
+    if (bucket) {
+      bucket.push(session);
+    } else {
+      groups.set(group, [session]);
+    }
+  }
+
+  const groupsHtml = Array.from(groups.entries())
+    .map(([group, items]) => renderSessionGroup(group, items))
+    .join("");
+
+  const loadMoreHtml = hasMore
+    ? `<button type="button" id="load-more-button" class="btn btn--export">더 보기</button>`
+    : "";
+
+  target.innerHTML = groupsHtml + loadMoreHtml;
 }
 
 function setUploadStatus(html: string): void {
@@ -135,13 +216,13 @@ function setDropzoneBusy(busy: boolean): void {
 async function refreshSessions(generation: number): Promise<SessionListItem[]> {
   try {
     const result = await listSessions({
-      size: 20,
+      size: visibleSessionCount,
       q: filterQuery.trim() || undefined,
       dateFrom: filterDateFrom || undefined,
       dateTo: filterDateTo || undefined,
     });
     if (generation !== currentGeneration) return result.items;
-    renderSessionList(result.items);
+    renderSessionList(result.items, result.items.length < result.totalCount);
     return result.items;
   } catch (error) {
     if (generation !== currentGeneration) return [];
@@ -178,8 +259,8 @@ function maybeStartPolling(generation: number, items: SessionListItem[]): void {
 async function handleRetry(sessionId: string, generation: number): Promise<void> {
   if (retryingIds.has(sessionId)) return;
   retryingIds.add(sessionId);
-  const items = await refreshSessions(generation);
-  renderSessionList(items);
+  // refreshSessions()가 이미 최신 retryingIds 상태로 다시 그려주므로 별도 렌더가 필요 없다.
+  await refreshSessions(generation);
   try {
     await processSession(sessionId);
     retryingIds.delete(sessionId);
@@ -403,6 +484,7 @@ function wireFilters(generation: number): void {
 
   queryInput?.addEventListener("input", () => {
     filterQuery = queryInput.value;
+    visibleSessionCount = SESSION_PAGE_SIZE; // 새 검색은 "더 보기"로 늘려둔 범위를 리셋한다.
     if (filterDebounceId !== null) window.clearTimeout(filterDebounceId);
     // 검색어는 입력할 때마다 요청을 쏘지 않고 타이핑이 잠깐 멈췄을 때만 서버에 물어본다.
     filterDebounceId = window.setTimeout(() => {
@@ -412,11 +494,13 @@ function wireFilters(generation: number): void {
 
   fromInput?.addEventListener("change", () => {
     filterDateFrom = fromInput.value;
+    visibleSessionCount = SESSION_PAGE_SIZE;
     void refreshSessions(generation);
   });
 
   toInput?.addEventListener("change", () => {
     filterDateTo = toInput.value;
+    visibleSessionCount = SESSION_PAGE_SIZE;
     void refreshSessions(generation);
   });
 
@@ -424,6 +508,7 @@ function wireFilters(generation: number): void {
     filterQuery = "";
     filterDateFrom = "";
     filterDateTo = "";
+    visibleSessionCount = SESSION_PAGE_SIZE;
     if (queryInput) queryInput.value = "";
     if (fromInput) fromInput.value = "";
     if (toInput) toInput.value = "";
@@ -431,15 +516,43 @@ function wireFilters(generation: number): void {
   });
 }
 
-function wireRetryButtons(generation: number): void {
+function wireSessionListInteractions(generation: number): void {
   const list = el<"div">("session-list");
   if (!list) return;
   list.addEventListener("click", (event) => {
     const target = event.target as HTMLElement;
-    const button = target.closest<HTMLButtonElement>("[data-retry-id]");
-    if (!button) return;
-    const sessionId = button.dataset.retryId;
-    if (sessionId) void handleRetry(sessionId, generation);
+
+    const retryButton = target.closest<HTMLButtonElement>("[data-retry-id]");
+    if (retryButton) {
+      const sessionId = retryButton.dataset.retryId;
+      if (sessionId) void handleRetry(sessionId, generation);
+      return;
+    }
+
+    if (target.closest("#load-more-button")) {
+      visibleSessionCount += SESSION_PAGE_SIZE;
+      void refreshSessions(generation);
+      return;
+    }
+
+    const groupToggle = target.closest<HTMLButtonElement>("[data-group-toggle]");
+    if (groupToggle) {
+      const group = groupToggle.dataset.groupToggle as DateGroup | undefined;
+      if (!group) return;
+      if (expandedGroups.has(group)) {
+        expandedGroups.delete(group);
+      } else {
+        expandedGroups.add(group);
+      }
+      const expanded = expandedGroups.has(group);
+      const groupList = list.querySelector<HTMLElement>(
+        `[data-group-list="${CSS.escape(group)}"]`,
+      );
+      if (groupList) groupList.hidden = !expanded;
+      groupToggle.setAttribute("aria-expanded", String(expanded));
+      const chevron = groupToggle.querySelector(".session-group-heading__chevron");
+      if (chevron) chevron.textContent = expanded ? "▾" : "▸";
+    }
   });
 }
 
@@ -469,6 +582,8 @@ export function renderHomePage(): void {
   filterQuery = "";
   filterDateFrom = "";
   filterDateTo = "";
+  visibleSessionCount = SESSION_PAGE_SIZE;
+  expandedGroups = new Set<DateGroup>(["오늘"]);
   if (filterDebounceId !== null) {
     window.clearTimeout(filterDebounceId);
     filterDebounceId = null;
@@ -526,7 +641,7 @@ export function renderHomePage(): void {
   wireDropzone(generation);
   wireRecorder(generation);
   wireFilters(generation);
-  wireRetryButtons(generation);
+  wireSessionListInteractions(generation);
   renderHealthWidget();
 
   void refreshSessions(generation).then((items) => {
