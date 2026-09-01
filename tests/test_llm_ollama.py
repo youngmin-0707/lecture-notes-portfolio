@@ -39,7 +39,7 @@ class TestOllamaLlmProviderRequestShape:
             captured["url"] = url
             captured["json"] = json
             captured["timeout"] = timeout
-            return _FakeResponse(200, {"response": "{}", "done": True})
+            return _FakeResponse(200, {"message": {"content": "{}"}, "done": True})
 
         monkeypatch.setattr("app.llm.ollama.httpx.post", fake_post)
 
@@ -49,19 +49,39 @@ class TestOllamaLlmProviderRequestShape:
             keep_alive="30s",
             num_ctx=8192,
             timeout_seconds=600,
+            think=True,
+            temperature=0.3,
         )
         provider.generate("요약해줘")
 
-        assert captured["url"] == "http://127.0.0.1:11434/api/generate"
+        assert captured["url"] == "http://127.0.0.1:11434/api/chat"
         body = captured["json"]
         assert body["model"] == "qwen3:8b"
-        assert body["prompt"] == "요약해줘"
+        assert body["messages"] == [{"role": "user", "content": "요약해줘"}]
         assert body["stream"] is False
-        assert body["think"] is False
+        assert body["think"] is True
         assert body["format"] == "json"
         assert body["keep_alive"] == "30s"
         assert body["options"]["num_ctx"] == 8192
+        assert body["options"]["temperature"] == 0.3
         assert captured["timeout"] == 600
+
+    def test_think_and_temperature_default_from_settings(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict = {}
+
+        def fake_post(url: str, *, json: dict, timeout: float) -> _FakeResponse:
+            captured["json"] = json
+            return _FakeResponse(200, {"message": {"content": "{}"}, "done": True})
+
+        monkeypatch.setattr("app.llm.ollama.httpx.post", fake_post)
+
+        provider = OllamaLlmProvider()
+        provider.generate("요약해줘")
+
+        assert captured["json"]["think"] is True
+        assert captured["json"]["options"]["temperature"] == 0.3
 
 
 class TestOllamaLlmProviderSuccess:
@@ -69,7 +89,7 @@ class TestOllamaLlmProviderSuccess:
         payload = json.dumps({"oneLineSummary": "요약"})
 
         def fake_post(url: str, *, json: dict, timeout: float) -> _FakeResponse:
-            return _FakeResponse(200, {"response": payload, "done": True})
+            return _FakeResponse(200, {"message": {"content": payload}, "done": True})
 
         monkeypatch.setattr("app.llm.ollama.httpx.post", fake_post)
 
@@ -161,7 +181,21 @@ class TestOllamaLlmProviderErrorMapping:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         def fake_post(url: str, *, json: dict, timeout: float) -> _FakeResponse:
-            return _FakeResponse(200, {"done": True})  # "response" 필드 없음
+            return _FakeResponse(200, {"done": True})  # "message" 필드 없음
+
+        monkeypatch.setattr("app.llm.ollama.httpx.post", fake_post)
+
+        provider = OllamaLlmProvider()
+        with pytest.raises(AppError) as exc_info:
+            provider.generate("prompt")
+
+        assert exc_info.value.code == "LLM_INVALID_RESPONSE"
+
+    def test_message_missing_content_field_is_invalid_response(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def fake_post(url: str, *, json: dict, timeout: float) -> _FakeResponse:
+            return _FakeResponse(200, {"message": {}, "done": True})  # "content" 필드 없음
 
         monkeypatch.setattr("app.llm.ollama.httpx.post", fake_post)
 

@@ -1,9 +1,138 @@
 # 인수인계 — `lecture-notes` (2026-08-22~23 연속 세션 갱신)
 
+## -4. 2026-08-30 갱신 (Tailscale 원격 접속 + 안정성 수정 3건 + 신기능 2건)
+
+**아직 커밋 안 함.** 이 세션 전부 작업 트리에만 있음 — 다음 세션에서 검토 후 커밋할 것.
+백엔드는 launchd(`~/Library/LaunchAgents/com.lecturenotes.{backend,frontend}.plist`)로
+관리되며 재부팅해도 자동 시작·크래시 시 자동 재시작된다. 코드를 수정한 뒤에는
+`launchctl kickstart -k gui/$(id -u)/com.lecturenotes.backend`로 재시작할 것(그냥
+`uvicorn ...`을 다시 실행하면 launchd가 관리하는 것과 별개의 프로세스가 되어 포트 충돌).
+
+- **Tailscale로 회사 데스크탑에서 접속 가능하게 함**: `tailscale serve`가 `127.0.0.1:8765`/
+  `localhost:5173`를 tailnet 전용으로 프록시(`https://macbookpro.example.ts.net[:8765]`)
+  — 백엔드 `BIND_HOST=127.0.0.1` 원칙(§3.7)은 안 건드림. `app/main.py`에
+  `ALLOW_TAILSCALE_ORIGINS`(기본 False) 켜면 CORS가 `*.ts.net` origin도 허용.
+  `frontend/vite.config.ts`의 `server.allowedHosts`에 `.example.ts.net` 추가.
+  `frontend/src/api/client.ts`가 `window.location.hostname`이 `.ts.net`로 끝나면 백엔드
+  URL을 자동으로 같은 호스트의 8765 포트로 바꿔치기(로컬 접속과 원격 접속 둘 다 같은 빌드로
+  동작). 자세한 문서 없음 — 대화 로그가 유일한 설정 기록이니, 다시 설정할 일 있으면
+  `tailscale serve status`부터 확인할 것.
+- **오디오 자동 삭제(2026-08-29 막바지 추가)**: 요약까지 성공(DONE)하면 원본 오디오 파일을
+  지운다(`settings.DELETE_AUDIO_AFTER_PROCESSING`, 기본 True). `sessions.audio_path`를
+  `NULL`로 비우고, API에 `audioAvailable` 필드 추가. 프론트는 오디오 없으면 플레이어 대신
+  안내 문구. **기존 세션 오디오는 그대로 남겨둠(사용자가 유지 원함) — 일괄 삭제 안 함.**
+- **동시 전사 개수 제한(중요, 실제 장애 대응)**: 사용자가 강의 파일 9개를 25초 안에 연달아
+  업로드 → 동시 처리 제한이 없어 전부 병렬로 돌면서 CPU를 나눠 쓰다가 4시간 동안 전체
+  진행률이 20% 안팎에 머무는 실제 장애를 겪음(단독 실행 시 실시간의 ~5배속인데 9개 동시
+  실행 시 집계 처리량이 0.3배속까지 떨어짐 — 실측). `app/pipeline/transcription.py`에
+  `threading.Semaphore(settings.MAX_CONCURRENT_TRANSCRIPTIONS)`(기본 1) 추가 — 업로드는
+  몇 개든 즉시 접수되지만 실제 전사(CPU 바운드)는 한 번에 1개씩만. 장애 복구 절차: 백엔드
+  재시작(복구 스윕이 TRANSCRIBING 세션을 FAILED(INTERRUPTED)로 정리) → 각 세션에
+  `POST /sessions/{id}/process` 재호출 → 세마포어가 알아서 줄 세움. 이날 실제로 8개를
+  이 방법으로 전부 복구·완료시킴.
+- **제목 자동 생성**: `sessions.title_customized`(기본 False) 플래그 추가. 요약 완료 시
+  LLM이 제안한 제목(`suggestedTitle`, 새 프롬프트 필드)으로 자동 갱신하되, 사용자가 제목을
+  직접 입력/수정한 적이 있으면(업로드 시 명시 입력 또는 PATCH) 절대 안 덮어씀. 업로드 기본
+  제목("YYYY-MM-DD 수업")이 하루 여러 건이면 전부 동일해 구별 안 되는 문제(위 장애 상황에서
+  실제로 겪음)를 해결.
+- **홈 화면 세션 목록 필터**: `GET /sessions`에 `q`(제목+최신 요약 내용 검색, row_number
+  서브쿼리로 세션당 최신 요약만 검색), `date_from`/`date_to` 추가. 프론트 `home.ts`에 검색창
+  (디바운스 300ms) + 날짜 범위 입력 + 초기화 버튼.
+- **map-reduce 청크 크기 provider별 분리(성능 최적화)**: OpenAI는 컨텍스트가 1.05M 토큰(공식
+  문서로 확인)이라 이 앱 최장 강의(240분)도 통째로 한 번에 들어가는데, 기존 Ollama용 좁은
+  청크 크기(4000)를 그대로 쓰고 있어서 긴 강의마다 불필요하게 2~3번 호출되어(map+reduce)
+  시간이 2~3배, 고정 지시문(~1700토큰) 전송도 그만큼 반복되고 있었다 — 실사용 중 요약이
+  93~123초씩 걸리는 걸 이상하게 여겨 조사하다 발견. `app/pipeline/summarization.py`의
+  `_default_chunk_size_tokens()`가 provider_name으로 분기 —
+  openai는 `settings.OPENAI_SUMMARY_CHUNK_SIZE_TOKENS`(200000, 사실상 단일 호출).
+- 테스트: 백엔드 401 passed, 프론트 6 passed + tsc 통과, ruff 클린.
+- **다음 세션 참고**: 제목 자동 생성/청크 크기 분리 코드는 작성·테스트 완료됐지만, 8개
+  동시 처리 장애를 복구하는 동안 백엔드를 안 건드리려고 재시작을 미뤄뒀다 — 세션이 끝날
+  때 즈음 재시작해서 반영했는지 다음 세션에서 `git diff`/실제 동작으로 확인할 것. 그 전에
+  처리된 세션들은 제목이 자동으로 안 붙어 있을 수 있음(재요약하면 새로 붙음).
+
+
+
 이 문서는 다음 세션(사람이든 새 Claude Code 세션이든)이 이어받을 때 참고할 현재 상태 요약이다.
 전체 요구사항은 `/Users/son/개발/연습장/docs/requirements/stt-transcription.md`가 원본이며,
 이 문서는 그 문서의 "지금 어디까지 됐는가"만 다룬다. **백엔드(`backend/`)와 프론트엔드
 (`frontend/`)는 별도 git 저장소다** — 각자 `git log`로 확인할 것.
+
+## -3-1. 2026-08-29 추가 갱신 (요약 완료 후 오디오 자동 삭제)
+
+**아직 커밋 안 함.** 사용자가 실사용 중 "오디오 재생 기능을 거의 안 쓰고 요약/전사 텍스트만
+본다"고 확인 — 요약까지 성공(DONE)하면 원본 오디오 파일을 자동 삭제하도록 변경.
+
+- `app/core/config.py`: `DELETE_AUDIO_AFTER_PROCESSING: bool = True` 추가(되돌릴 수 없는
+  동작이라 끌 수 있게 설정으로 뺐음).
+- `app/pipeline/summarization.py`: `_delete_audio_if_configured()` — `DONE` 전이 직후
+  호출, `session.audio_path`를 `None`으로 비움. 재요약 시 오디오가 이미 없어도
+  `delete_stored_file()`의 `missing_ok=True`라 조용히 넘어감. 실패(FAILED)한 세션은
+  오디오를 안 지움 — 재시도 여지를 남김.
+- API: `SessionDetailResponse`에 `audioAvailable: bool` 추가(`app/schemas/session.py`,
+  `app/api/v1/sessions.py`). 프론트(`sessionDetail.ts`)는 이 값으로 `<audio>` 엘리먼트
+  렌더링 여부를 분기 — 오디오 없으면 빈 플레이어 대신 안내 문구.
+- DB 스키마 변경 없음(마이그레이션 불필요) — `audio_path` 컬럼은 원래도 nullable.
+- 테스트: 백엔드 368 passed(신규 7개: `test_pipeline_summarization.py`의
+  `TestAudioDeletedAfterSuccess`, `test_sessions_read_api.py`의
+  `TestSessionDetailAudioAvailable`), 프론트 6 passed + tsc 통과.
+- 실사용 검증: 실제 업로드→DONE까지 돌려서 디스크에서 파일 삭제 확인, `audioAvailable`
+  false 확인, 프론트 화면에 안내 문구 정상 노출·콘솔 에러 0건 확인.
+- **다음 세션 참고**: 이 변경은 **앞으로 완료되는 세션에만** 적용된다 — 기존 12개 세션의
+  오디오 파일(`data/audio/`)은 그대로 남아있다. 사용자가 원하면 기존 파일도 일괄 정리하는
+  스크립트를 짜줄 수 있음 — 아직 안 함, 명시적으로 요청 없었음.
+
+## -3. 2026-08-29 갱신 (요약 엔진 로컬→클라우드 전환 + 자유형식 본문 도입)
+
+**아직 커밋 안 함** — 이 세션에서 수정한 파일들은 작업 트리에만 있다. 다음 세션(또는 사람)이
+검토 후 커밋할 것.
+
+- **배경**: 사용자가 로컬 Ollama(qwen3:14b) 재요약 기능을 실사용하다 (1) 24GB 통합 메모리에서
+  STT+LLM을 같이 돌릴 때 메모리 압박(swap 발생)을 겪었고 (2) `think:true`를 켠 뒤로 실제
+  재요약이 JSON 스키마 검증 실패로 두 번 연속 실패하는 걸 확인함(로그: `atSeconds` 필드 누락,
+  `oneLineSummary` 타입 불일치). 요약 단계만 클라우드(OpenAI)로 옮기기로 함 — 로컬
+  STT(faster-whisper)는 계속 오프라인으로 남는다.
+- **`app/llm/openai_provider.py` 신규**: `OpenAiLlmProvider`가 `LlmProvider` 인터페이스를
+  구현. OpenAI Responses API(`client.responses.create`)의 `text.format` structured
+  outputs(`strict: True`)로 JSON 스키마를 서버가 강제 — Ollama의 느슨한 `format:"json"`과
+  달리 스키마 위반 자체가 구조적으로 안 생긴다. `app/pipeline/providers.py`의
+  `build_llm_provider()`에 `"openai"` 분기 추가. `app/core/config.py`에
+  `OPENAI_API_KEY`/`OPENAI_MODEL`(기본 `gpt-5.6-luna`)/`OPENAI_TIMEOUT_SECONDS` 추가.
+  실사용 `.env`는 `LLM_PROVIDER=openai`로 전환됨(키는 사용자가 직접 넣음).
+- **요약 스키마를 고정 6섹션 → 자유형식 본문으로 전면 개정** (US-05가 원래 요구하던 "6섹션
+  항상 존재"를 깨는 결정, 사용자가 명시적으로 승인함): 기존 방식은 "용어: 한 줄 정의"처럼
+  뭉뚱그려진 요약으로 이어진다는 게 사용자가 실제 Claude 채팅으로 만든 예시와의 비교로
+  드러남(강의마다 섹션 구성이 다를 수 있는데 고정 필드로는 표현 불가). 이제 LLM 응답 JSON은
+  4개 필드만 강제: `oneLineSummary`, `keyPoints`(타임스탬프 점프용, 여전히 구조화됨),
+  `keywords`, `detailedNotes`(강의 내용에 맞게 LLM이 자유롭게 구성한 마크다운 본문 — 섹션
+  개수/제목 유동적, 💡 콜아웃, 중첩 리스트, 코드블록 등 허용). `concepts`/`codeSnippets`/
+  `actionItems`는 스키마·API 응답에는 남아있지만(과거 요약 데이터 호환용) 이후 생성되는
+  요약에는 항상 빈 배열 — 새로 추가한 `summaries.detailed_notes_markdown` 컬럼(마이그레이션
+  `c6691b026114`)이 실제 콘텐츠를 담는다.
+  - `app/llm/schema.py`(`ParsedSummary`에서 concepts/code_snippets/action_items 제거,
+    `detailed_notes` 추가) / `app/llm/parsing.py`(`render_markdown()`이 "## 한 줄 요약" +
+    "## 핵심 주제"만 조립하고 본문은 LLM 마크다운을 그대로 붙임) / `app/llm/prompt.py`(실제
+    Claude 채팅 예시를 프롬프트에 few-shot으로 포함, "환각 금지"를 "사실 왜곡 금지"와 "이해를
+    돕는 예시 창작은 허용"으로 구분) 모두 함께 개정.
+  - 프론트(`frontend/src/pages/sessionDetail.ts`)는 `detailedNotesMarkdown`이 있으면 그걸
+    주 콘텐츠로 렌더링(신규 `frontend/src/utils/markdown.ts` — `## `/`-`/`1. `/`**`/코드펜스/
+    💡콜아웃만 지원하는 아주 작은 파서, 범용 마크다운 라이브러리 아님), 없으면(2026-08-29
+    이전 요약) 예전 개념/코드/과제 구조화 섹션으로 폴백— 과거 데이터도 계속 보임.
+- **세션 상세 화면에 "요약 다시 만들기" 버튼 신규 추가**(`sessionDetail.ts`) — 이전엔 백엔드
+  API(`POST /sessions/{id}/summarize`, T-25)만 있고 프론트 트리거가 아예 없었다(요구사항
+  §7 태스크 목록에도 프론트 태스크로 안 잡혀 있었음, 실제 버그로 확인·수정).
+- 테스트: 백엔드 361 passed(신규 테스트 다수 포함: `test_llm_openai.py`,
+  `test_health_api.py`의 OpenAI 분기, `test_llm_parsing.py`/`test_pipeline_summarization.py`
+  전면 개정), 프론트 6 passed(vitest) + tsc 통과. `docker compose -f docker-compose.test.yml`
+  postgres 컨테이너 필요(`TEST_DATABASE_URL=postgresql+psycopg2://postgres:postgres@localhost:5433/signup_test`).
+- **실사용 검증**: "녹음 (12)"(22분 RAG 강의)을 새 파이프라인으로 재요약 → 10개 섹션의 풍부한
+  본문(중첩 헤더, 💡 콜아웃, 코드블록, 구체적 예시)이 생성됨을 확인, Playwright로 실제
+  브라우저 렌더링(헤더/리스트/코드블록/콜아웃 전부 정상)까지 확인 완료.
+- **다음 세션 참고**: 아직 git 커밋 안 됨(위 참고). 나머지 8~9개 기존 세션도 "요약 다시
+  만들기" 버튼으로 재요약하면 새 형식으로 바뀐다(사용자가 원할 때 직접 누르면 됨, 자동
+  일괄 재처리는 하지 않았음). `app/models/summary.py`의 `concepts`/`code_snippets`/
+  `action_items` 컬럼은 이제 죽은 코드 경로에 가깝다 — 과거 데이터 조회용으로만 남겨뒀으니
+  향후 완전히 정리하고 싶으면 별도 마이그레이션으로 드롭을 고려할 것(지금은 보류).
 
 ## -2. 2026-08-23 갱신 (T-34 검색 화면 + T-38 보안 체크리스트 보고서)
 

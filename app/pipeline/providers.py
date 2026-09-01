@@ -11,6 +11,7 @@ from app.core.config import settings
 from app.core.errors import AppError
 from app.llm.base import LlmProvider
 from app.llm.ollama import OllamaLlmProvider
+from app.llm.openai_provider import OpenAiLlmProvider
 from app.stt.base import SttProvider
 from app.stt.local_whisper import LocalWhisperSttProvider
 
@@ -29,12 +30,14 @@ def build_stt_provider(model: str | None = None) -> SttProvider:
 def build_llm_provider(name: str | None = None) -> LlmProvider:
     """`name`(요청 바디의 `llmProvider`) 또는 `settings.LLM_PROVIDER`로 조립한다.
 
-    이번 라운드는 `ollama`만 지원한다 (무료 티어 어댑터는 T-29).
+    `ollama`(로컬)와 `openai`(클라우드, 2026-08-29 추가)를 지원한다.
     """
     provider_name = (name or settings.LLM_PROVIDER).lower()
-    if provider_name != "ollama":
-        raise AppError(
-            "LLM_NOT_CONFIGURED",
-            message=f"지원하지 않는 LLM provider입니다: {provider_name}",
-        )
-    return OllamaLlmProvider()
+    if provider_name == "ollama":
+        return OllamaLlmProvider()
+    if provider_name == "openai":
+        return OpenAiLlmProvider()
+    raise AppError(
+        "LLM_NOT_CONFIGURED",
+        message=f"지원하지 않는 LLM provider입니다: {provider_name}",
+    )

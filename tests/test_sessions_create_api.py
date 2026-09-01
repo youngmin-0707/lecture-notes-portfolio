@@ -88,6 +88,31 @@ class TestSuccessfulUpload:
         assert body["title"].endswith("수업")
         assert body["course"] is None
 
+        from app.models.session import Session as SessionModel
+
+        session = db_session.get(SessionModel, body["sessionId"])
+        # 2026-08-30: 제목을 직접 안 정했으니, 요약 완료 후 자동 제목으로 덮어써도 된다.
+        assert session.title_customized is False
+
+    def test_explicit_title_marks_customized(
+        self, client, db_session, valid_wav_bytes: bytes
+    ) -> None:
+        """2026-08-30: 업로드 시 제목을 직접 입력했다면 이후 요약이 자동으로 덮어쓰면 안 된다."""
+        response = client.post(
+            "/api/v1/sessions",
+            data={"title": "내가 정한 제목"},
+            files={"file": ("lecture.wav", valid_wav_bytes, "audio/wav")},
+        )
+
+        assert response.status_code == 201, response.text
+        body = response.json()
+        assert body["title"] == "내가 정한 제목"
+
+        from app.models.session import Session as SessionModel
+
+        session = db_session.get(SessionModel, body["sessionId"])
+        assert session.title_customized is True
+
     def test_autoprocess_true_transitions_to_transcribing(
         self, client, valid_wav_bytes: bytes
     ) -> None:

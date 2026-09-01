@@ -65,10 +65,54 @@ class TestHealthNeverExposesApiKeys:
         assert "super-secret-gemini-key" not in response.text
 
 
+class TestHealthOpenAiProvider:
+    def test_configured_true_when_api_key_set_and_exposes_openai_model(
+        self, real_client, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(settings, "LLM_PROVIDER", "openai")
+        monkeypatch.setattr(settings, "OPENAI_API_KEY", "sk-super-secret")
+        monkeypatch.setattr(settings, "OPENAI_MODEL", "gpt-4o-mini")
+
+        response = real_client.get("/health")
+
+        llm_check = response.json()["checks"]["llm"]
+        assert llm_check["provider"] == "openai"
+        assert llm_check["model"] == "gpt-4o-mini"
+        assert llm_check["configured"] is True
+        assert llm_check["reachable"] is None
+        assert "sk-super-secret" not in response.text
+
+    def test_configured_false_when_api_key_missing(
+        self, real_client, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(settings, "LLM_PROVIDER", "openai")
+        monkeypatch.setattr(settings, "OPENAI_API_KEY", None)
+
+        response = real_client.get("/health")
+
+        body = response.json()
+        assert body["checks"]["llm"]["configured"] is False
+        assert body["status"] == "degraded"
+
+    def test_openai_provider_is_never_offline_mode(
+        self, real_client, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(settings, "STT_PROVIDER", "local_whisper")
+        monkeypatch.setattr(settings, "LLM_PROVIDER", "openai")
+        monkeypatch.setattr(settings, "OPENAI_API_KEY", "sk-super-secret")
+
+        response = real_client.get("/health")
+
+        assert response.json()["checks"]["offlineMode"] is False
+
+
 class TestHealthDegradesGracefully:
     def test_llm_unreachable_marks_degraded_but_still_200(
         self, real_client, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # 로컬 .env가 LLM_PROVIDER=openai로 바뀌어도 이 테스트는 ollama 분기를 검증해야 하므로
+        # 명시적으로 고정한다 — 테스트가 개발자의 실제 .env에 의존하면 안 된다.
+        monkeypatch.setattr(settings, "LLM_PROVIDER", "ollama")
         monkeypatch.setattr(settings, "OLLAMA_BASE_URL", "http://127.0.0.1:1")
 
         response = real_client.get("/health")
@@ -80,6 +124,8 @@ class TestHealthDegradesGracefully:
         assert body["checks"]["llm"]["reachable"] is False
 
     def test_llm_reachable_marks_ok(self, real_client, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(settings, "LLM_PROVIDER", "ollama")
+
         def _fake_get(url, timeout):
             class _Resp:
                 status_code = 200

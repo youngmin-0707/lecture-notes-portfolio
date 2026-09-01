@@ -11,39 +11,30 @@ import json
 
 from app.llm.base import LlmProvider
 
-# 파서(§3.4 §T-16)가 요구하는 최소 필드를 모두 채운, 항상 파싱에 성공하는 기본 응답.
+# 파서(§3.4 §T-16, 2026-08-29 자유형식 본문 도입으로 개정)가 요구하는 최소 필드를 모두 채운,
+# 항상 파싱에 성공하는 기본 응답.
 DEFAULT_VALID_SUMMARY_JSON = json.dumps(
     {
+        "suggestedTitle": "이진 탐색 트리 삽입/탐색 구현",
         "oneLineSummary": "이진 탐색 트리의 구조와 삽입·탐색 연산을 다룬 강의입니다.",
         "keyPoints": [
             {"text": "이진 탐색 트리(BST)의 정의와 특성", "atSeconds": 12.0},
             {"text": "BST 삽입 연산의 재귀적 구현", "atSeconds": 240.0},
             {"text": "평균/최악 시간 복잡도 비교", "atSeconds": 480.0},
         ],
-        "concepts": [
-            {
-                "term": "이진 탐색 트리",
-                "description": "왼쪽 서브트리 < 루트 < 오른쪽 서브트리 규칙을 만족하는 트리.",
-            },
-            {
-                "term": "중위 순회",
-                "description": "왼쪽 → 루트 → 오른쪽 순서로 방문. 정렬된 순서를 얻는다.",
-            },
-        ],
-        "codeSnippets": [
-            {
-                "language": "python",
-                "code": (
-                    "def insert(node, value):\n"
-                    "    if node is None:\n"
-                    "        return Node(value)\n"
-                    "    ..."
-                ),
-                "description": "BST 삽입 재귀 구현",
-            }
-        ],
-        "actionItems": [],
         "keywords": ["이진 탐색 트리", "중위 순회", "시간 복잡도"],
+        "detailedNotes": (
+            "1. 이진 탐색 트리(BST)\n"
+            "왼쪽 서브트리 < 루트 < 오른쪽 서브트리 규칙을 만족하는 트리입니다.\n\n"
+            "2. 중위 순회\n"
+            "왼쪽 → 루트 → 오른쪽 순서로 방문하면 정렬된 순서를 얻습니다.\n\n"
+            "```python\n"
+            "def insert(node, value):\n"
+            "    if node is None:\n"
+            "        return Node(value)\n"
+            "    ...\n"
+            "```"
+        ),
     },
     ensure_ascii=False,
 )
@@ -68,6 +59,9 @@ class FakeLlmProvider(LlmProvider):
             호출 횟수가 목록 길이를 넘어서면 마지막 항목을 반복한다.
             미지정 시 항상 `DEFAULT_VALID_SUMMARY_JSON`을 반환한다.
         provider_model: `summaries.provider_model`에 저장될 값.
+        provider_name: `summaries.provider`에 저장될 값. provider별 분기(예: OpenAI만 다른
+            map-reduce 청크 크기를 쓰는 `_default_chunk_size_tokens`)를 테스트할 때 `"openai"`
+            등으로 지정한다.
     """
 
     def __init__(
@@ -75,6 +69,7 @@ class FakeLlmProvider(LlmProvider):
         *,
         responses: list[str | BaseException] | None = None,
         provider_model: str = "fake-llm-model",
+        provider_name: str = "fake",
     ) -> None:
         self._responses: list[str | BaseException] = (
             list(responses) if responses is not None else [DEFAULT_VALID_SUMMARY_JSON]
@@ -82,12 +77,13 @@ class FakeLlmProvider(LlmProvider):
         if not self._responses:
             raise ValueError("responses는 비어 있을 수 없습니다.")
         self._provider_model = provider_model
+        self._provider_name = provider_name
         self._call_index = 0
         self.calls: list[str] = []
 
     @property
     def provider_name(self) -> str:
-        return "fake"
+        return self._provider_name
 
     @property
     def provider_model(self) -> str:

@@ -5,11 +5,14 @@ Fake `SttProvider`로 실제 모델 없이 상태 전이·저장 로직을 검�
 
 from __future__ import annotations
 
+import threading
+import time
 from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select
 
+from app.core.config import settings
 from app.core.errors import AppError
 from app.models.enums import SessionStatus
 from app.models.glossary import GlossaryTerm
@@ -35,6 +38,40 @@ def _make_session(**overrides) -> Session:
     )
     defaults.update(overrides)
     return Session(**defaults)
+
+
+class TestTranscriptionConcurrencyLimit:
+    """2026-08-30: 업로드는 몇 개를 연달아 해도 즉시 접수되지만, CPU 바운드인 전사 자체는
+    `settings.MAX_CONCURRENT_TRANSCRIPTIONS`(기본 1)로 동시 실행을 제한해 순차 처리한다 —
+    실사용 중 9개를 거의 동시에 올렸다가 서로 코어를 다퉈 전체가 훨씬 느려지는 걸 실측한 뒤
+    도입했다.
+    """
+
+    def test_semaphore_caps_concurrent_transcriptions(self) -> None:
+        from app.pipeline.transcription import _TRANSCRIPTION_SEMAPHORE
+
+        concurrent_count = 0
+        max_observed = 0
+        lock = threading.Lock()
+
+        def worker() -> None:
+            nonlocal concurrent_count, max_observed
+            with _TRANSCRIPTION_SEMAPHORE:
+                with lock:
+                    concurrent_count += 1
+                    max_observed = max(max_observed, concurrent_count)
+                time.sleep(0.05)
+                with lock:
+                    concurrent_count -= 1
+
+        threads = [threading.Thread(target=worker) for _ in range(5)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert max_observed <= settings.MAX_CONCURRENT_TRANSCRIPTIONS
+        assert max_observed >= 1  # 세마포어가 아예 아무것도 못 지나가게 막은 건 아닌지 확인.
 
 
 class TestSuccessfulTranscription:

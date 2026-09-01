@@ -76,6 +76,43 @@ def test_cors_blocks_other_origins() -> None:
     assert "access-control-allow-origin" not in response.headers
 
 
+class TestBuildAllowedOriginRegex:
+    """2026-08-29: Tailscale 원격 접속용 CORS 확장. 순수 함수라 앱 import 없이 검증 가능."""
+
+    def test_tailscale_origin_rejected_by_default(self) -> None:
+        import re
+
+        from app.main import build_allowed_origin_regex
+
+        pattern = build_allowed_origin_regex(allow_tailscale_origins=False)
+        assert re.match(pattern, "https://macbookpro.example.ts.net") is None
+
+    def test_tailscale_origin_allowed_when_enabled(self) -> None:
+        import re
+
+        from app.main import build_allowed_origin_regex
+
+        pattern = build_allowed_origin_regex(allow_tailscale_origins=True)
+        assert re.match(pattern, "https://macbookpro.example.ts.net") is not None
+        assert re.match(pattern, "https://macbookpro.example.ts.net:443") is not None
+
+    def test_non_ts_net_https_origin_still_rejected_when_enabled(self) -> None:
+        import re
+
+        from app.main import build_allowed_origin_regex
+
+        pattern = build_allowed_origin_regex(allow_tailscale_origins=True)
+        assert re.match(pattern, "https://evil.example.com") is None
+
+    def test_localhost_still_allowed_when_tailscale_enabled(self) -> None:
+        import re
+
+        from app.main import build_allowed_origin_regex
+
+        pattern = build_allowed_origin_regex(allow_tailscale_origins=True)
+        assert re.match(pattern, "http://127.0.0.1:5173") is not None
+
+
 def test_cors_exposes_content_disposition_header() -> None:
     """T-33: 브라우저는 기본적으로 응답 헤더 중 "안전 목록"만 JS에서 읽을 수 있다.
 

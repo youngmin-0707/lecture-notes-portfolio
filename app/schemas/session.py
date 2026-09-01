@@ -85,7 +85,13 @@ class SummaryActionItemResponse(CamelModel):
 
 
 class SummaryResponse(CamelModel):
-    """§5.3③ DONE 응답의 `summary` 객체."""
+    """§5.3③ DONE 응답의 `summary` 객체.
+
+    `detailed_notes_markdown`이 2026-08-29부터의 주 콘텐츠다(§3.4 개정) — LLM이 강의에
+    맞게 자유롭게 구성한 마크다운 본문을 그대로 담는다. `concepts`/`code_snippets`/
+    `action_items`는 그 이전 고정 6섹션 방식의 유산으로, 과거 요약과의 호환을 위해 응답에는
+    남아 있지만 이후 생성되는 요약에는 항상 빈 배열이다.
+    """
 
     summary_id: str
     content_markdown: str
@@ -94,6 +100,7 @@ class SummaryResponse(CamelModel):
     code_snippets: list[SummaryCodeSnippetResponse]
     action_items: list[SummaryActionItemResponse]
     keywords: list[str]
+    detailed_notes_markdown: str
     provider: str
     provider_model: str
     created_at: UtcDateTime
@@ -136,6 +143,7 @@ class SessionDetailResponse(CamelModel):
     poll_after_seconds: int | None = None
     transcript: TranscriptInfoResponse
     summary: SummaryResponse | None = None
+    audio_available: bool
 
 
 class TranscriptSegmentResponse(CamelModel):

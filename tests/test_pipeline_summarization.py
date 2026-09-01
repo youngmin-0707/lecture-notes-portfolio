@@ -78,8 +78,8 @@ class TestSuccessfulSummarization:
         assert summary.provider == "fake"
         assert summary.provider_model == "fake-qwen3"
         assert "## 한 줄 요약" in summary.content_markdown
-        assert "## 과제 및 공지" in summary.content_markdown
-        assert summary.action_items == []
+        assert "## 복습 키워드" in summary.content_markdown
+        assert summary.detailed_notes_markdown
         assert len(summary.key_points) >= 3
         assert summary.key_points[0]["atSeconds"] is not None
 
@@ -94,21 +94,203 @@ class TestSuccessfulSummarization:
 
         assert progress_module.get_progress(session.id) is None
 
-    def test_action_items_preserved_when_present(self, db_session) -> None:
+    def test_detailed_notes_persisted(self, db_session) -> None:
         session = _make_session()
         db_session.add(session)
         db_session.flush()
         _add_transcript(db_session, session)
 
-        raw = make_summary_json(actionItems=[{"text": "과제 3번 제출", "dueDate": "2026-08-27"}])
+        notes = "1. 과제 3번 제출 안내\n마감은 다음 주 금요일입니다."
+        raw = make_summary_json(detailedNotes=notes)
         provider = FakeLlmProvider(responses=[raw])
         summarize_session(db_session, session, provider, sleep=_no_sleep)
 
         summary = db_session.execute(
             select(Summary).where(Summary.session_id == session.id)
         ).scalar_one()
-        assert summary.action_items == [{"text": "과제 3번 제출", "dueDate": "2026-08-27"}]
+        assert summary.detailed_notes_markdown == notes
         assert "과제 3번 제출" in summary.content_markdown
+
+
+class TestSuggestedTitleAppliedOnSuccess:
+    """2026-08-30: 제목을 직접 정한 적이 없으면 요약 완료 시 LLM 제안 제목으로 갱신한다.
+
+    하루에 여러 건을 올리면 기본 제목("YYYY-MM-DD 수업")이 전부 똑같아 구별이 안 되는 걸
+    실사용 중 실제로 겪은 뒤 도입했다.
+    """
+
+    def test_title_updated_when_not_customized(self, db_session) -> None:
+        session = _make_session(title="2026-08-30 수업", title_customized=False)
+        db_session.add(session)
+        db_session.flush()
+        _add_transcript(db_session, session)
+
+        raw = make_summary_json(suggestedTitle="이진 탐색 트리 삽입/탐색 구현")
+        provider = FakeLlmProvider(responses=[raw])
+        result = summarize_session(db_session, session, provider, sleep=_no_sleep)
+
+        assert result.status == SessionStatus.DONE.value
+        assert result.title == "이진 탐색 트리 삽입/탐색 구현"
+
+    def test_title_not_overwritten_when_customized(self, db_session) -> None:
+        session = _make_session(title="내가 직접 정한 제목", title_customized=True)
+        db_session.add(session)
+        db_session.flush()
+        _add_transcript(db_session, session)
+
+        raw = make_summary_json(suggestedTitle="LLM이 제안한 다른 제목")
+        provider = FakeLlmProvider(responses=[raw])
+        result = summarize_session(db_session, session, provider, sleep=_no_sleep)
+
+        assert result.status == SessionStatus.DONE.value
+        assert result.title == "내가 직접 정한 제목"
+
+    def test_title_truncated_to_column_max_length(self, db_session) -> None:
+        session = _make_session(title_customized=False)
+        db_session.add(session)
+        db_session.flush()
+        _add_transcript(db_session, session)
+
+        long_title = "가" * 250
+        raw = make_summary_json(suggestedTitle=long_title)
+        provider = FakeLlmProvider(responses=[raw])
+        result = summarize_session(db_session, session, provider, sleep=_no_sleep)
+
+        assert result.status == SessionStatus.DONE.value
+        assert len(result.title) == 200
+
+
+class TestChunkSizeIsProviderAware:
+    """2026-08-30: OpenAI는 컨텍스트가 넓어(1.05M 토큰) map-reduce가 사실상 필요 없다 —
+    Ollama와 같은 좁은 청크 크기를 그대로 쓰면 불필요하게 여러 번 호출돼 시간·비용이
+    2~3배 든다는 걸 실사용 중 겪은 뒤 provider별로 분리했다.
+    """
+
+    def _add_long_transcript(self, db_session, session: Session, *, segment_count: int) -> None:
+        """세그먼트 여러 개로 나눠 총 길이가 Ollama 기본 청크 크기(4000 "토큰" ≈ 8800자)는
+        넘지만 OpenAI 기본 청크 크기(200000)에는 한참 못 미치게 만든다. `chunk_segments()`는
+        세그먼트 하나를 중간에 쪼개지 않으므로, 여러 개로 나눠 넣어야 청크 분할이 실제로
+        일어날 수 있다.
+        """
+        transcript = Transcript(
+            session_id=session.id,
+            text_raw="(세그먼트 참고)",
+            text_corrected=None,
+            language="ko",
+            provider="fake",
+            provider_model="fake-large",
+            elapsed_seconds=1.5,
+        )
+        db_session.add(transcript)
+        db_session.flush()
+        segment_text = "이 강의에서는 벡터 검색과 임베딩에 대해 자세히 설명합니다. " * 10  # ~500자
+        for i in range(segment_count):
+            db_session.add(
+                TranscriptSegment(
+                    transcript_id=transcript.id,
+                    seq=i,
+                    start_seconds=float(i * 10),
+                    end_seconds=float(i * 10 + 9),
+                    text=segment_text,
+                )
+            )
+        db_session.flush()
+
+    def test_ollama_provider_triggers_map_reduce_for_long_transcript(self, db_session) -> None:
+        session = _make_session()
+        db_session.add(session)
+        db_session.flush()
+        self._add_long_transcript(db_session, session, segment_count=50)
+
+        provider = FakeLlmProvider(provider_name="ollama")
+        result = summarize_session(db_session, session, provider, sleep=_no_sleep)
+
+        assert result.status == SessionStatus.DONE.value
+        # map(2개 이상) + reduce(1개) = 최소 3번 호출.
+        assert len(provider.calls) >= 3
+
+    def test_openai_provider_uses_single_call_for_same_transcript(self, db_session) -> None:
+        session = _make_session()
+        db_session.add(session)
+        db_session.flush()
+        self._add_long_transcript(db_session, session, segment_count=50)
+
+        provider = FakeLlmProvider(provider_name="openai")
+        result = summarize_session(db_session, session, provider, sleep=_no_sleep)
+
+        assert result.status == SessionStatus.DONE.value
+        assert len(provider.calls) == 1
+
+
+class TestAudioDeletedAfterSuccess:
+    """2026-08-29: 요약까지 성공(DONE)하면 원본 오디오는 지운다 — 실사용 확인 후 도입."""
+
+    def test_audio_file_deleted_and_path_cleared_on_success(
+        self, db_session, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        audio_file = tmp_path / "lecture.wav"
+        audio_file.write_bytes(b"RIFF....")
+        session = _make_session(audio_path=str(audio_file))
+        db_session.add(session)
+        db_session.flush()
+        _add_transcript(db_session, session)
+
+        provider = FakeLlmProvider()
+        result = summarize_session(db_session, session, provider, sleep=_no_sleep)
+
+        assert result.status == SessionStatus.DONE.value
+        assert not audio_file.exists()
+        assert result.audio_path is None
+
+    def test_audio_kept_when_summarization_fails(self, db_session, tmp_path) -> None:
+        audio_file = tmp_path / "lecture.wav"
+        audio_file.write_bytes(b"RIFF....")
+        session = _make_session(audio_path=str(audio_file))
+        db_session.add(session)
+        db_session.flush()
+        _add_transcript(db_session, session)
+
+        provider = FakeLlmProvider(responses=[AppError("LLM_INVALID_RESPONSE", retryable=False)])
+        result = summarize_session(db_session, session, provider, sleep=_no_sleep)
+
+        assert result.status == SessionStatus.FAILED.value
+        assert audio_file.exists()
+        assert result.audio_path == str(audio_file)
+
+    def test_disabled_via_setting_keeps_audio(
+        self, db_session, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from app.core.config import settings
+
+        monkeypatch.setattr(settings, "DELETE_AUDIO_AFTER_PROCESSING", False)
+        audio_file = tmp_path / "lecture.wav"
+        audio_file.write_bytes(b"RIFF....")
+        session = _make_session(audio_path=str(audio_file))
+        db_session.add(session)
+        db_session.flush()
+        _add_transcript(db_session, session)
+
+        provider = FakeLlmProvider()
+        result = summarize_session(db_session, session, provider, sleep=_no_sleep)
+
+        assert result.status == SessionStatus.DONE.value
+        assert audio_file.exists()
+        assert result.audio_path == str(audio_file)
+
+    def test_resummarize_after_audio_already_deleted_does_not_error(
+        self, db_session, tmp_path
+    ) -> None:
+        """재요약 시점엔 첫 성공 때 이미 오디오가 지워져 있을 수 있다 — 조용히 넘어가야 한다."""
+        session = _make_session(audio_path=None)
+        db_session.add(session)
+        db_session.flush()
+        _add_transcript(db_session, session)
+
+        provider = FakeLlmProvider()
+        result = summarize_session(db_session, session, provider, sleep=_no_sleep)
+
+        assert result.status == SessionStatus.DONE.value
+        assert result.audio_path is None
 
 
 class TestTranscriptPreservedOnFailure:

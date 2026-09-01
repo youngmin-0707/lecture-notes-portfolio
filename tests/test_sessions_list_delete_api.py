@@ -168,6 +168,65 @@ class TestListSessions:
         titles = [item["title"] for item in response.json()["items"]]
         assert titles == ["실패"]
 
+    def test_filters_by_title_query(self, client, db_session) -> None:
+        db_session.add_all(
+            [
+                _make_session(title="RAG와 PGVector 실습"),
+                _make_session(title="이진 탐색 트리"),
+            ]
+        )
+        db_session.flush()
+
+        response = client.get("/api/v1/sessions", params={"q": "pgvector"})
+
+        titles = [item["title"] for item in response.json()["items"]]
+        assert titles == ["RAG와 PGVector 실습"]
+
+    def test_filters_by_summary_content_query(self, client, db_session) -> None:
+        with_match = _make_session(title="9주차")
+        without_match = _make_session(title="10주차")
+        db_session.add_all([with_match, without_match])
+        db_session.flush()
+        _add_summary(db_session, with_match, content_markdown="## 한 줄 요약\n임베딩과 벡터 검색")
+        _add_summary(db_session, without_match, content_markdown="## 한 줄 요약\n재귀와 반복문")
+
+        response = client.get("/api/v1/sessions", params={"q": "임베딩"})
+
+        titles = [item["title"] for item in response.json()["items"]]
+        assert titles == ["9주차"]
+
+    def test_query_only_matches_latest_summary(self, client, db_session) -> None:
+        """세션당 여러 요약이 있을 때(재요약), 최신 요약 내용만 검색 대상이어야 한다."""
+        session = _make_session(title="9주차")
+        db_session.add(session)
+        db_session.flush()
+        _add_summary(db_session, session, content_markdown="## 한 줄 요약\n예전 내용: 그래프")
+        db_session.flush()
+        _add_summary(db_session, session, content_markdown="## 한 줄 요약\n최신 내용: 트리")
+
+        old_match = client.get("/api/v1/sessions", params={"q": "그래프"})
+        new_match = client.get("/api/v1/sessions", params={"q": "트리"})
+
+        assert old_match.json()["items"] == []
+        assert [item["title"] for item in new_match.json()["items"]] == ["9주차"]
+
+    def test_filters_by_date_range(self, client, db_session) -> None:
+        db_session.add_all(
+            [
+                _make_session(title="8월25일", recorded_at=datetime(2026, 8, 25, tzinfo=UTC)),
+                _make_session(title="8월30일", recorded_at=datetime(2026, 8, 30, tzinfo=UTC)),
+                _make_session(title="9월1일", recorded_at=datetime(2026, 9, 1, tzinfo=UTC)),
+            ]
+        )
+        db_session.flush()
+
+        response = client.get(
+            "/api/v1/sessions", params={"date_from": "2026-08-26", "date_to": "2026-08-31"}
+        )
+
+        titles = [item["title"] for item in response.json()["items"]]
+        assert titles == ["8월30일"]
+
     def test_invalid_status_returns_400(self, client) -> None:
         response = client.get("/api/v1/sessions", params={"status": "NOT_A_STATUS"})
 

@@ -95,9 +95,9 @@ def _check_stt() -> SttCheck:
 
 def _check_llm() -> LlmCheck:
     provider = settings.LLM_PROVIDER
-    model = settings.LLM_MODEL
 
     if provider == "ollama":
+        model = settings.LLM_MODEL
         configured = True
         reachable = False
         try:
@@ -116,11 +116,27 @@ def _check_llm() -> LlmCheck:
             reachable=reachable,
         )
 
+    if provider == "openai":
+        # 클라우드 API — 실제 호출은 쿼터를 소모하므로 /health에서 시도하지 않고 키 존재
+        # 여부로만 판단한다(Ollama의 `/api/tags` 핑과 대칭이지만, 값 자체는 노출하지 않는다).
+        configured = settings.OPENAI_API_KEY is not None
+        return LlmCheck(
+            ok=configured,
+            provider=provider,
+            model=settings.OPENAI_MODEL,
+            configured=configured,
+            reachable=None,
+        )
+
     # 무료 티어 어댑터(T-29, 선택 구현) 등 그 외 provider는 API 키 존재 여부로만 판단한다 —
     # 실제 호출은 쿼터를 소모하므로 /health에서 시도하지 않는다.
     configured = bool(settings.GEMINI_API_KEY or settings.GROQ_API_KEY)
     return LlmCheck(
-        ok=configured, provider=provider, model=model, configured=configured, reachable=None
+        ok=configured,
+        provider=provider,
+        model=settings.LLM_MODEL,
+        configured=configured,
+        reachable=None,
     )
 
 

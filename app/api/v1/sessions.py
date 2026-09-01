@@ -12,13 +12,13 @@
 from __future__ import annotations
 
 import math
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time
 from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, Form, Query, UploadFile
 from fastapi.responses import FileResponse, Response
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session as DBSession
 
 from app.audio.storage import delete_stored_file, save_upload_stream
@@ -98,8 +98,11 @@ async def create_session(
         validate_duration_seconds(probe.duration_seconds)
 
         now = datetime.now(UTC)
+        explicit_title = (title or "").strip()
         session = SessionModel(
-            title=(title or "").strip() or _default_title(now),
+            title=explicit_title or _default_title(now),
+            # 업로드 시 제목을 직접 입력했다면 요약 완료 후 자동 제목으로 덮어쓰지 않는다.
+            title_customized=bool(explicit_title),
             course=course,
             status=SessionStatus.UPLOADED.value,
             source=SessionSource.UPLOAD.value,
@@ -164,15 +167,56 @@ def list_sessions(
     db: Annotated[DBSession, Depends(get_db, scope="function")],
     course: str | None = None,
     status: SessionStatus | None = None,
+    q: Annotated[str | None, Query(min_length=1, max_length=200)] = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
     page: Annotated[int, Query(ge=1)] = 1,
     size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> SessionListResponse:
-    """세션 목록 조회 (§5.3⑤, US-14). 최근 녹음순, 과목·상태 필터 + 페이징."""
+    """세션 목록 조회 (§5.3⑤, US-14). 최근 녹음순, 과목·상태·제목/내용 검색·날짜 범위 필터 +
+    페이징 (2026-08-30: `q`/`date_from`/`date_to` 추가 — 홈 화면 세션 목록에서 바로 좁혀
+    보기 위함. 전문 검색+스니펫이 필요하면 `GET /search`를 쓴다; 이건 그보다 가벼운 목록
+    필터다).
+    """
     filters = []
     if course is not None:
         filters.append(SessionModel.course == course)
     if status is not None:
         filters.append(SessionModel.status == status.value)
+    if date_from is not None:
+        filters.append(SessionModel.recorded_at >= datetime.combine(date_from, time.min, UTC))
+    if date_to is not None:
+        filters.append(SessionModel.recorded_at <= datetime.combine(date_to, time.max, UTC))
+    if q is not None:
+        like_pattern = f"%{q.strip().lower()}%"
+        # "제목 또는 (최신 요약) 내용"에 매칭되는 세션 id만 추린다. 세션당 최신 요약 1건만
+        # 봐야 하므로(§2.3) row_number()로 세션별 최신 행을 뽑는 서브쿼리를 쓴다 — 목록
+        # 페이지네이션(count/limit) 쿼리 구조를 안 건드리고 필터 하나로 얹을 수 있다.
+        ranked_summaries = (
+            select(
+                Summary.session_id,
+                Summary.content_markdown,
+                func.row_number()
+                .over(partition_by=Summary.session_id, order_by=Summary.created_at.desc())
+                .label("rn"),
+            )
+        ).subquery()
+        latest_summary = (
+            select(ranked_summaries.c.session_id, ranked_summaries.c.content_markdown).where(
+                ranked_summaries.c.rn == 1
+            )
+        ).subquery()
+        matching_ids = (
+            select(SessionModel.id)
+            .outerjoin(latest_summary, latest_summary.c.session_id == SessionModel.id)
+            .where(
+                or_(
+                    func.lower(SessionModel.title).like(like_pattern),
+                    func.lower(latest_summary.c.content_markdown).like(like_pattern),
+                )
+            )
+        )
+        filters.append(SessionModel.id.in_(matching_ids))
 
     total_count = db.execute(
         select(func.count()).select_from(SessionModel).where(*filters)
@@ -362,6 +406,8 @@ def update_session_metadata(
     session = _get_session_or_404(db, session_id)
     if body.title is not None:
         session.title = body.title
+        # 사용자가 직접 제목을 정했다는 뜻이므로, 이후 재요약해도 자동 제목이 덮어쓰지 않는다.
+        session.title_customized = True
     if body.course is not None:
         session.course = body.course
     db.flush()
@@ -414,6 +460,7 @@ def _build_session_detail_response(db: DBSession, session: SessionModel) -> Sess
                 for a in latest_summary.action_items
             ],
             keywords=list(latest_summary.keywords),
+            detailed_notes_markdown=latest_summary.detailed_notes_markdown,
             provider=latest_summary.provider,
             provider_model=latest_summary.provider_model,
             created_at=latest_summary.created_at,
@@ -444,6 +491,7 @@ def _build_session_detail_response(db: DBSession, session: SessionModel) -> Sess
         poll_after_seconds=DEFAULT_POLL_AFTER_SECONDS if progress is not None else None,
         transcript=transcript_info,
         summary=summary_response,
+        audio_available=bool(session.audio_path and Path(session.audio_path).is_file()),
     )
 
 

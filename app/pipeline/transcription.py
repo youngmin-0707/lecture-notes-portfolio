@@ -6,11 +6,19 @@
 
 이번 라운드에서는 동기 호출만 지원한다. `POST /sessions/{id}/process`를 통한 비동기
 트리거(`BackgroundTasks`)는 T-19에서 연결한다.
+
+**동시 전사 제한(2026-08-30)**: 업로드를 짧은 시간 안에 여러 건 올리면 `BackgroundTasks`가
+전부 동시에(별도 스레드로) 실행돼, CPU 바운드인 로컬 Whisper 추론이 서로 코어를 다투게 된다
+— 실사용 중 강의 9개를 거의 동시에 올렸더니 4시간 동안 전체 진행률이 20% 안팎에 머무는 걸
+실측했다(단독 실행 시 실시간의 약 5배 속도가 나오던 것과 대비). `_TRANSCRIPTION_SEMAPHORE`로
+동시 실행 개수를 `settings.MAX_CONCURRENT_TRANSCRIPTIONS`(기본 1, 순차 처리)로 제한해
+해결한다 — 업로드는 몇 개를 연달아 해도 즉시 다 접수되고 큐에 쌓이듯 순서대로 처리된다.
 """
 
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Sequence
 
 from sqlalchemy.orm import Session as DBSession
@@ -30,6 +38,10 @@ from app.pipeline.progress import clear_progress, make_stt_progress_callback, se
 from app.stt.base import SttProvider, SttSegment, SttTranscriptionResult
 
 logger = logging.getLogger("app.pipeline.transcription")
+
+# CPU 바운드인 로컬 Whisper 추론이 동시에 여러 개 돌면 서로 코어를 다퉈 전체적으로 훨씬
+# 느려진다(모듈 docstring 참고) — 프로세스 전역으로 동시 실행 개수를 제한한다.
+_TRANSCRIPTION_SEMAPHORE = threading.Semaphore(settings.MAX_CONCURRENT_TRANSCRIPTIONS)
 
 
 def _validate_segments_monotonic_non_overlapping(segments: Sequence[SttSegment]) -> None:
@@ -118,12 +130,13 @@ def transcribe_session(
         initial_prompt = build_initial_prompt(glossary_terms)
 
     try:
-        result = provider.transcribe(
-            session.audio_path,
-            language=settings.STT_LANGUAGE,
-            initial_prompt=initial_prompt,
-            progress_callback=progress_callback,
-        )
+        with _TRANSCRIPTION_SEMAPHORE:
+            result = provider.transcribe(
+                session.audio_path,
+                language=settings.STT_LANGUAGE,
+                initial_prompt=initial_prompt,
+                progress_callback=progress_callback,
+            )
         _validate_segments_monotonic_non_overlapping(result.segments)
         _persist_transcript(db, session, provider, result, glossary_terms)
     except Exception as exc:  # noqa: BLE001 — 어떤 예외든 STT 실패로 취급한다 (§2.4).

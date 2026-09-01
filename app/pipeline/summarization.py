@@ -8,6 +8,16 @@
 이상으로 건드리지 않는다 — 삭제·수정 로직이 아예 없다. 요약이 몇 번을 실패하든 전사는
 그대로 남는다.
 
+**오디오 삭제(2026-08-29)**: 반대로 원본 오디오 파일은 요약까지 성공(DONE)하면 지운다
+(`_delete_audio_if_configured`, `settings.DELETE_AUDIO_AFTER_PROCESSING`으로 끌 수 있음).
+전사가 이미 텍스트로 영구 보존되므로, 원본은 재전사가 필요한 경우가 아니면 더 이상 필요
+없다는 판단이다.
+
+**제목 자동 생성(2026-08-30)**: 사용자가 제목을 직접 정한 적이 없으면(`_apply_suggested_title`,
+`session.title_customized`) 요약 완료 시 LLM이 제안한 제목으로 세션 제목을 갱신한다 —
+업로드 기본 제목("YYYY-MM-DD 수업")이 하루 여러 건이면 전부 똑같아 구별이 안 되는 문제를
+실사용 중 실제로 겪은 뒤 도입했다.
+
 재시도 정책(§3.4): 429/5xx/타임아웃(`AppError(retryable=True)`)만 지수 백오프로 최대
 `settings.LLM_MAX_RETRIES`회 시도한다. 형식 위반(`LLM_INVALID_RESPONSE`)이나 4xx는
 `retryable=False`이므로 즉시 최종 실패로 처리된다 (형식 위반 자체의 1회 재요청은
@@ -23,6 +33,7 @@ from collections.abc import Callable
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DBSession
 
+from app.audio.storage import delete_stored_file
 from app.core.config import settings
 from app.core.errors import AppError
 from app.glossary.correction import correct_transcript_text, fetch_applicable_terms
@@ -47,19 +58,61 @@ def _persist_summary(
         session_id=session.id,
         content_markdown=render_markdown(parsed),
         key_points=[{"text": p.text, "atSeconds": p.at_seconds} for p in parsed.key_points],
-        concepts=[{"term": c.term, "description": c.description} for c in parsed.concepts],
-        code_snippets=[
-            {"language": s.language, "code": s.code, "description": s.description}
-            for s in parsed.code_snippets
-        ],
-        action_items=[{"text": a.text, "dueDate": a.due_date} for a in parsed.action_items],
         keywords=list(parsed.keywords),
+        detailed_notes_markdown=parsed.detailed_notes,
         provider=provider.provider_name,
         provider_model=provider.provider_model,
     )
     db.add(summary)
     db.flush()
     return summary
+
+
+def _delete_audio_if_configured(session: Session) -> None:
+    """파이프라인이 완전히 끝난(DONE) 세션의 원본 오디오를 지운다 (2026-08-29).
+
+    텍스트(전사+요약)만으로 충분하다는 실사용 확인 후 도입 — 되돌릴 수 없는 동작이므로
+    `settings.DELETE_AUDIO_AFTER_PROCESSING`으로 언제든 끌 수 있게 뺐다. 재요약
+    (`resummarize_session_in_background`)이 이 함수를 다시 통과할 때는 오디오가 이미
+    없는 상태일 수 있는데, `delete_stored_file()`이 `missing_ok=True`라 조용히 넘어간다.
+    """
+    if not settings.DELETE_AUDIO_AFTER_PROCESSING or not session.audio_path:
+        return
+    delete_stored_file(session.audio_path)
+    session.audio_path = None
+
+
+def _default_chunk_size_tokens(provider: LlmProvider) -> int:
+    """map-reduce 청크 크기를 provider별로 고른다 (2026-08-30).
+
+    Ollama처럼 컨텍스트가 좁은 로컬 모델은 `settings.SUMMARY_CHUNK_SIZE_TOKENS`(4000)로
+    나눠야 하지만, OpenAI는 컨텍스트가 1.05M 토큰이라 이 앱이 허용하는 최장 강의(240분)도
+    통째로 들어간다 — 굳이 나누면 이 앱의 최장 강의(240분)조차 필요 없이 2~3번 호출되며
+    2~3배 느려지고 비용도 늘어난다(고정 지시문이 매 호출 반복 전송됨).
+    """
+    if provider.provider_name == "openai":
+        return settings.OPENAI_SUMMARY_CHUNK_SIZE_TOKENS
+    return settings.SUMMARY_CHUNK_SIZE_TOKENS
+
+
+_SESSION_TITLE_MAX_LENGTH = 200  # app/models/session.py의 title 컬럼(String(200))과 맞춘다.
+
+
+def _apply_suggested_title(session: Session, parsed: ParsedSummary) -> None:
+    """사용자가 제목을 직접 정한 적이 없으면(§ `title_customized`) LLM이 제안한 제목으로
+    바꾼다 (2026-08-30).
+
+    업로드 시 붙는 기본 제목("YYYY-MM-DD 수업")이 하루에 여러 건 올리면 전부 동일해서
+    세션 목록에서 강의를 구별할 수 없다는 문제를 실사용 중 실제로 겪은 뒤 도입했다. 재요약
+    때도 다시 호출되므로, 사용자가 그사이 직접 제목을 바꿨다면(`title_customized=True`)
+    존중하고 건드리지 않는다.
+    """
+    if session.title_customized:
+        return
+    suggested = parsed.suggested_title.strip()
+    if not suggested:
+        return
+    session.title = suggested[:_SESSION_TITLE_MAX_LENGTH]
 
 
 def _build_timed_segments(
@@ -111,7 +164,9 @@ def summarize_session(
         sleep: 백오프 대기에 쓸 함수. 테스트에서 실제 대기를 건너뛰려면 `lambda _: None`을
             주입한다. 미지정 시 `time.sleep`.
         chunk_size_tokens: map-reduce(§3.4, T-21) 청크 크기(토큰 근사치). 미지정 시
-            `settings.SUMMARY_CHUNK_SIZE_TOKENS`.
+            provider별 기본값(`_default_chunk_size_tokens`) — Ollama는
+            `settings.SUMMARY_CHUNK_SIZE_TOKENS`(4000), OpenAI는 컨텍스트가 넓어
+            `settings.OPENAI_SUMMARY_CHUNK_SIZE_TOKENS`(200000, 사실상 항상 단일 호출).
         chunk_overlap_tokens: 청크 간 오버랩(토큰 근사치). 미지정 시
             `settings.SUMMARY_CHUNK_OVERLAP_TOKENS`.
         map_call_interval_seconds: map 단계 청크 간 호출 간격(초). 미지정 시
@@ -140,7 +195,7 @@ def summarize_session(
     )
     effective_sleep = sleep if sleep is not None else time.sleep
     effective_chunk_size_tokens = (
-        chunk_size_tokens if chunk_size_tokens is not None else settings.SUMMARY_CHUNK_SIZE_TOKENS
+        chunk_size_tokens if chunk_size_tokens is not None else _default_chunk_size_tokens(provider)
     )
     effective_chunk_overlap_tokens = (
         chunk_overlap_tokens
@@ -203,15 +258,15 @@ def summarize_session(
             break
         else:
             _persist_summary(db, session, provider, parsed)
+            _apply_suggested_title(session, parsed)
             session.status = SessionStatus.DONE.value
+            _delete_audio_if_configured(session)
             db.flush()
             logger.info(
-                "LLM summarization succeeded: session_id=%s attempt=%d key_points=%d "
-                "action_items=%d",
+                "LLM summarization succeeded: session_id=%s attempt=%d key_points=%d",
                 session.id,
                 attempt,
                 len(parsed.key_points),
-                len(parsed.action_items),
             )
             clear_progress(session.id)
             return session

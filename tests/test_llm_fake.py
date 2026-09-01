@@ -23,7 +23,7 @@ class TestFakeLlmProviderDefaultResponse:
         assert result == DEFAULT_VALID_SUMMARY_JSON
         data = json.loads(result)
         assert "oneLineSummary" in data
-        assert data["actionItems"] == []
+        assert data["detailedNotes"]
 
     def test_records_calls(self) -> None:
         provider = FakeLlmProvider()
@@ -77,10 +77,10 @@ class TestFakeLlmProviderScenarios:
 
 
 class TestMakeSummaryJsonHelper:
-    def test_overrides_action_items(self) -> None:
-        text = make_summary_json(actionItems=[{"text": "과제 3번 제출", "dueDate": "2026-08-27"}])
+    def test_overrides_detailed_notes(self) -> None:
+        text = make_summary_json(detailedNotes="1. 과제 3번 제출 안내")
         data = json.loads(text)
 
-        assert data["actionItems"] == [{"text": "과제 3번 제출", "dueDate": "2026-08-27"}]
+        assert data["detailedNotes"] == "1. 과제 3번 제출 안내"
         # 다른 필드는 기본값 그대로 유지된다.
         assert "oneLineSummary" in data

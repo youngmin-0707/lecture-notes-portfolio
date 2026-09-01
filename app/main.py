@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import re
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -67,11 +66,28 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="API", version="1.0.0", lifespan=lifespan)
 
-# CORS: http://127.0.0.1:* , http://localhost:* 만 허용한다 (§3.7).
-_ALLOWED_ORIGIN_REGEX = re.compile(r"^http://(127\.0\.0\.1|localhost)(:\d+)?$")
+
+def build_allowed_origin_regex(*, allow_tailscale_origins: bool) -> str:
+    """CORS `allow_origin_regex` 패턴 문자열을 만든다.
+
+    http://127.0.0.1:*, http://localhost:* 는 항상 허용한다 (§3.7). `allow_tailscale_origins`가
+    켜지면 자기 tailnet 서브도메인(https://*.ts.net)도 추가로 허용한다 — `tailscale serve`로
+    원격(예: 회사 데스크탑)에서 접속할 때 필요하다. 이 도메인은 Tailscale이 계정별 tailnet
+    단위로만 발급하므로(타인이 임의로 리졸브를 바꿀 수 없음) 신뢰 가능하다. 순수 함수라 앱을
+    import하지 않고도 단위 테스트할 수 있다.
+    """
+    patterns = [r"http://(127\.0\.0\.1|localhost)(:\d+)?"]
+    if allow_tailscale_origins:
+        patterns.append(r"https://[a-zA-Z0-9.-]+\.ts\.net(:\d+)?")
+    return r"^(?:" + "|".join(patterns) + r")$"
+
+
+_ALLOWED_ORIGIN_REGEX = build_allowed_origin_regex(
+    allow_tailscale_origins=settings.ALLOW_TAILSCALE_ORIGINS
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=_ALLOWED_ORIGIN_REGEX.pattern,
+    allow_origin_regex=_ALLOWED_ORIGIN_REGEX,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],

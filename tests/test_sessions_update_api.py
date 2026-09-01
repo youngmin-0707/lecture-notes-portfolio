@@ -110,6 +110,32 @@ class TestUpdateSessionPartial:
         assert response.status_code == 200, response.text
 
 
+class TestTitleCustomizedFlag:
+    """2026-08-30: 제목을 직접 바꾸면 이후 요약 완료 시 자동 제목이 덮어쓰지 않는다."""
+
+    def test_patching_title_marks_customized(self, client, db_session) -> None:
+        session = _make_session(title_customized=False)
+        db_session.add(session)
+        db_session.flush()
+
+        response = client.patch(f"/api/v1/sessions/{session.id}", json={"title": "새 제목"})
+
+        assert response.status_code == 200, response.text
+        db_session.refresh(session)
+        assert session.title_customized is True
+
+    def test_patching_only_course_does_not_mark_customized(self, client, db_session) -> None:
+        session = _make_session(title_customized=False)
+        db_session.add(session)
+        db_session.flush()
+
+        response = client.patch(f"/api/v1/sessions/{session.id}", json={"course": "새 과목"})
+
+        assert response.status_code == 200, response.text
+        db_session.refresh(session)
+        assert session.title_customized is False
+
+
 class TestUpdateSessionValidation:
     def test_empty_title_returns_400(self, client, db_session) -> None:
         session = _make_session()

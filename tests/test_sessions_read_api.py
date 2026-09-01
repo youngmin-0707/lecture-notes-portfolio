@@ -101,6 +101,39 @@ class TestSessionDetailDone:
         assert body["errorCode"] is None
 
 
+class TestSessionDetailAudioAvailable:
+    """2026-08-29: 요약까지 끝나면 오디오가 지워지므로 `audioAvailable`로 존재 여부를 알려준다."""
+
+    def test_true_when_audio_file_exists_on_disk(self, client, db_session, tmp_path) -> None:
+        audio_file = tmp_path / "lecture.wav"
+        audio_file.write_bytes(b"RIFF....")
+        session = _make_session(audio_path=str(audio_file))
+        db_session.add(session)
+        db_session.flush()
+
+        response = client.get(f"/api/v1/sessions/{session.id}")
+
+        assert response.json()["audioAvailable"] is True
+
+    def test_false_when_audio_path_is_none(self, client, db_session) -> None:
+        session = _make_session(status=SessionStatus.DONE.value, audio_path=None)
+        db_session.add(session)
+        db_session.flush()
+
+        response = client.get(f"/api/v1/sessions/{session.id}")
+
+        assert response.json()["audioAvailable"] is False
+
+    def test_false_when_audio_path_points_to_missing_file(self, client, db_session) -> None:
+        session = _make_session(audio_path="/nonexistent/path/audio.wav")
+        db_session.add(session)
+        db_session.flush()
+
+        response = client.get(f"/api/v1/sessions/{session.id}")
+
+        assert response.json()["audioAvailable"] is False
+
+
 class TestSessionDetailWithSummary:
     def test_done_session_includes_summary_response(self, client, db_session) -> None:
         """T-19: summary는 SummaryResponse 스키마로 채워진다 (§5.3③ DONE 예시)."""
