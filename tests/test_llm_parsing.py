@@ -9,7 +9,7 @@ import pytest
 from app.llm.fake import DEFAULT_VALID_SUMMARY_JSON, make_summary_json
 from app.llm.parsing import parse_summary_response, render_markdown
 
-FIXED_HEADERS = ["## 한 줄 요약", "## 핵심 주제", "## 복습 키워드"]
+FIXED_HEADERS = ["## 한 줄 요약", "## 핵심 주제"]
 
 
 class TestParseSummaryResponseSuccess:
@@ -95,12 +95,17 @@ class TestRenderMarkdown:
         key_points_section = markdown.split("## 핵심 주제")[1].split(parsed.detailed_notes)[0]
         assert "[" in key_points_section  # 타임스탬프가 대괄호로 병기된다.
 
-    def test_empty_key_points_and_keywords_render_none(self) -> None:
-        raw = make_summary_json(keyPoints=[], keywords=[])
+    def test_empty_key_points_render_none(self) -> None:
+        raw = make_summary_json(keyPoints=[])
         parsed = parse_summary_response(raw)
         markdown = render_markdown(parsed)
 
         key_points_section = markdown.split("## 핵심 주제")[1].split(parsed.detailed_notes)[0]
         assert "없음" in key_points_section
-        keywords_section = markdown.split("## 복습 키워드")[1]
-        assert "없음" in keywords_section
+
+    def test_keywords_section_not_rendered(self) -> None:
+        """2026-09-01: 사용률이 낮아 "복습 키워드" 섹션을 앞으로 생성되는 요약부터 제거했다."""
+        parsed = parse_summary_response(DEFAULT_VALID_SUMMARY_JSON)
+        markdown = render_markdown(parsed)
+
+        assert "복습 키워드" not in markdown

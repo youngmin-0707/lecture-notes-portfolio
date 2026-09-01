@@ -12,9 +12,11 @@
   JSON 스키마를 서버가 강제한다(`strict: True`). Ollama의 느슨한 `format:"json"`과 달리
   스키마 위반 자체가 구조적으로 발생하지 않아, `app/llm/summarizer.py`의 "형식 위반 1회
   재요청" 경로를 사실상 안 타게 된다.
-- 스키마는 `app/llm/prompt.py`가 프롬프트에 서술하는 5개 필드(`suggestedTitle`/
-  `oneLineSummary`/`keyPoints`/`keywords`/`detailedNotes`)와 1:1 대응한다 — 필드가 갈라지면
-  `parse_summary_response()`가 깨지므로 두 곳을 함께 바꿀 것.
+- 스키마는 `app/llm/prompt.py`가 프롬프트에 서술하는 4개 필드(`suggestedTitle`/
+  `oneLineSummary`/`keyPoints`/`detailedNotes`)와 1:1 대응한다 — 필드가 갈라지면
+  `parse_summary_response()`가 깨지므로 두 곳을 함께 바꿀 것. (`keywords`/"복습 키워드"
+  섹션은 사용률이 낮아 2026-09-01부로 제거 — 앞으로 생성되는 요약부터 적용, 과거 요약의
+  저장된 데이터·마크다운은 그대로 둔다.)
 """
 
 from __future__ import annotations
@@ -52,7 +54,6 @@ _SUMMARY_JSON_SCHEMA = {
                 "additionalProperties": False,
             },
         },
-        "keywords": {"type": "array", "items": {"type": "string"}},
         "detailedNotes": {
             "type": "string",
             "description": (
@@ -61,7 +62,7 @@ _SUMMARY_JSON_SCHEMA = {
             ),
         },
     },
-    "required": ["suggestedTitle", "oneLineSummary", "keyPoints", "keywords", "detailedNotes"],
+    "required": ["suggestedTitle", "oneLineSummary", "keyPoints", "detailedNotes"],
     "additionalProperties": False,
 }
 

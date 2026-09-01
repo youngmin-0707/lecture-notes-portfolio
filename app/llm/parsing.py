@@ -6,7 +6,8 @@
 `render_markdown()`은 파싱된 데이터로부터 마크다운을 만들어 낸다. "## 한 줄 요약"과
 "## 핵심 주제"만 결정론적으로 조립하고(그 아래에 있어야 프리뷰 추출 로직이 계속 동작한다 —
 `app/api/v1/sessions.py`의 `_extract_summary_preview`), 본문은 LLM이 쓴 자유형식
-마크다운(`detailed_notes`)을 그대로 붙여넣는다. "## 복습 키워드"는 맨 끝에 붙인다.
+마크다운(`detailed_notes`)을 그대로 붙여넣는다. ("## 복습 키워드" 섹션은 사용률이 낮아
+2026-09-01부로 제거 — 앞으로 생성되는 요약부터 적용, 과거 요약은 그대로 둔다.)
 """
 
 from __future__ import annotations
@@ -114,7 +115,10 @@ def _format_timestamp(seconds: float | None) -> str | None:
 
 def render_markdown(parsed: ParsedSummary) -> str:
     """ "## 한 줄 요약" + "## 핵심 주제"는 결정론적으로, 본문은 LLM의 자유형식 마크다운
-    (`detailed_notes`)을 그대로 붙인다. "## 복습 키워드"는 맨 끝에 붙인다.
+    (`detailed_notes`)을 그대로 붙인다.
+
+    "## 복습 키워드" 섹션은 사용률이 낮아 2026-09-01부로 제거했다 — 앞으로 생성되는 요약부터
+    적용되며, 이미 저장된 과거 요약의 `content_markdown`(DB)은 그대로 둔다.
     """
     lines: list[str] = ["## 한 줄 요약", parsed.one_line_summary.strip(), "", "## 핵심 주제"]
 
@@ -127,8 +131,5 @@ def render_markdown(parsed: ParsedSummary) -> str:
         lines.append("없음")
 
     lines += ["", parsed.detailed_notes.strip()]
-
-    lines += ["", "## 복습 키워드"]
-    lines.append(", ".join(parsed.keywords) if parsed.keywords else "없음")
 
     return "\n".join(lines)

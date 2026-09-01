@@ -1,4 +1,35 @@
-# 인수인계 — `lecture-notes` (2026-08-22~23 연속 세션 갱신)
+# 인수인계 — `lecture-notes` (2026-08-22~09-01 연속 세션 갱신)
+
+## -5. 2026-09-01 갱신 (복습 키워드 섹션 제거)
+
+**아직 커밋 안 함.** 위 §-4(2026-08-30)와 마찬가지로 작업 트리에만 있음.
+
+- **배경**: 사용자가 실사용 중 요약 화면의 "복습 키워드" 섹션 사용률이 낮다고 판단해 제거
+  요청. 기존 문서(HANDOFF.md 포함)는 소급 수정하지 않고 **앞으로 생성되는 요약부터만**
+  적용하는 이 프로젝트의 기존 관례(§-3-1 오디오 자동삭제, §-3 요약 스키마 개정과 동일한
+  패턴)를 그대로 따름 — 과거에 저장된 keywords 데이터·마크다운은 손대지 않았다.
+- **`app/llm/prompt.py`/`app/llm/openai_provider.py`**: LLM에게 더 이상 `keywords` 필드를
+  요청하지 않음. OpenAI structured output의 `_SUMMARY_JSON_SCHEMA`에서도 `keywords`
+  property와 `required` 항목을 제거(4개 필드로 축소: `suggestedTitle`/`oneLineSummary`/
+  `keyPoints`/`detailedNotes`).
+- **`app/llm/parsing.py`**: `render_markdown()`이 더 이상 "## 복습 키워드" 섹션을 마크다운
+  끝에 붙이지 않음.
+- **`app/llm/schema.py`(`ParsedSummary.keywords`)와 `summaries.keywords` DB 컬럼은
+  그대로 유지**했다 — §-3에서 죽은 필드가 된 `concepts`/`code_snippets`/`action_items`와
+  같은 방식(과거 데이터 호환용으로 스키마·API에는 남기되 이후 생성되는 요약에는 항상 빈
+  배열)을 그대로 따른 결정이다. 컬럼을 드롭하고 싶어지면 그때 가서 별도 마이그레이션으로
+  고려할 것.
+- **프론트(`frontend/src/pages/sessionDetail.ts`)**: "복습 키워드" `<h3>` 섹션을
+  `summary.keywords`가 비어있지 않을 때만 렌더링하도록 조건부로 바꿈 — 별도 분기 없이도
+  앞으로 생성되는 요약(keywords 항상 `[]`)은 자연히 안 보이고, 이미 keywords가 채워진
+  과거 세션은 계속 그대로 보인다.
+- 테스트: `test_llm_parsing.py`(FIXED_HEADERS에서 "## 복습 키워드" 제거,
+  `test_empty_key_points_and_keywords_render_none` → `test_empty_key_points_render_none` +
+  `test_keywords_section_not_rendered` 신설)/`test_llm_openai.py`(스키마 `required` 집합
+  갱신)/`test_pipeline_summarization.py`("## 복습 키워드" 존재 단언 제거) 갱신. 백엔드
+  **401 passed / 4 skipped**, 프론트 **6 passed**(vitest) + `tsc --noEmit` 통과, `ruff
+  check` 클린. 실브라우저 검증은 아직 안 함(코드 변경 후 dev 서버 재기동해서 세션 상세
+  화면을 직접 확인해볼 것).
 
 ## -4. 2026-08-30 갱신 (Tailscale 원격 접속 + 안정성 수정 3건 + 신기능 2건)
 

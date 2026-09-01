@@ -78,7 +78,6 @@ class TestSuccessfulSummarization:
         assert summary.provider == "fake"
         assert summary.provider_model == "fake-qwen3"
         assert "## 한 줄 요약" in summary.content_markdown
-        assert "## 복습 키워드" in summary.content_markdown
         assert summary.detailed_notes_markdown
         assert len(summary.key_points) >= 3
         assert summary.key_points[0]["atSeconds"] is not None
