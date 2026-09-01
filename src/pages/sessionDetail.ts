@@ -118,7 +118,18 @@ function renderSummaryTab(summary: SessionSummaryDetail | null): string {
         .join("")}</ul>`
     : `<p>없음</p>`;
 
-  const keywordsText = summary.keywords.length ? summary.keywords.join(", ") : "없음";
+  // "복습 키워드" 섹션은 사용률이 낮아 2026-09-01부로 제거했다 — 앞으로 생성되는 요약은
+  // keywords가 항상 빈 배열이라 이 섹션이 자연스럽게 안 보인다. 이미 keywords가 채워진
+  // 과거 요약(2026-09-01 이전 생성)은 그대로 계속 보여준다(데이터를 지우거나 문서를
+  // 소급 수정하지 않는다).
+  const keywordsHtml = summary.keywords.length
+    ? `
+      <section class="summary-section">
+        <h3>복습 키워드</h3>
+        <p>${escapeHtml(summary.keywords.join(", "))}</p>
+      </section>
+    `
+    : "";
 
   // 자유형식 본문이 있으면 그걸 주 콘텐츠로 렌더링하고, 없는(2026-08-29 이전) 요약은
   // 예전 개념/코드/과제 구조화 섹션으로 폴백한다. HMR로 갱신된 페이지가 API 응답 갱신 전
@@ -143,10 +154,7 @@ function renderSummaryTab(summary: SessionSummaryDetail | null): string {
         ${keyPointsHtml}
       </section>
       ${bodyHtml}
-      <section class="summary-section">
-        <h3>복습 키워드</h3>
-        <p>${escapeHtml(keywordsText)}</p>
-      </section>
+      ${keywordsHtml}
     </div>
   `;
 }
