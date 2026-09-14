@@ -24,6 +24,9 @@ class SessionSource(str, Enum):
 
     UPLOAD = "UPLOAD"
     RECORD = "RECORD"
+    # 오디오가 아니라 텍스트 파일(.txt/.md)을 올린 세션 (2026-09-14). 전사 단계 없이
+    # 업로드 내용이 곧바로 `transcripts`가 되고 요약부터 시작한다.
+    TEXT = "TEXT"
 
 
 class QuizStatus(str, Enum):

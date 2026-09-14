@@ -503,3 +503,43 @@ class TestTranscriptNotReady:
         assert exc_info.value.code == "TRANSCRIPT_NOT_READY"
         # 상태를 건드리지 않았어야 한다 (호출부 사용 오류이므로).
         assert session.status == SessionStatus.TRANSCRIBING.value
+
+
+class TestTextSessionHasNoTimestamps:
+    """2026-09-14: 텍스트 파일로 만든 세션은 시간축이 없으므로 타임스탬프를 붙이지 않는다."""
+
+    def test_key_point_timestamps_dropped_for_text_source(self, db_session) -> None:
+        session = _make_session(
+            source="TEXT",
+            audio_path=None,
+            duration_seconds=None,
+            original_filename="note.txt",
+            mime_type="text/plain",
+        )
+        db_session.add(session)
+        db_session.flush()
+        _add_transcript(db_session, session)
+
+        summarize_session(db_session, session, FakeLlmProvider(), sleep=_no_sleep)
+
+        summary = db_session.execute(
+            select(Summary).where(Summary.session_id == session.id)
+        ).scalar_one()
+        assert summary.key_points  # 항목 자체는 그대로 남는다.
+        assert all(point["atSeconds"] is None for point in summary.key_points)
+        # LLM이 지어낸 "[MM:SS]"가 마크다운에도 남으면 안 된다.
+        assert "## 핵심 주제" in summary.content_markdown
+        assert "[00:" not in summary.content_markdown
+
+    def test_audio_session_keeps_timestamps(self, db_session) -> None:
+        session = _make_session()
+        db_session.add(session)
+        db_session.flush()
+        _add_transcript(db_session, session)
+
+        summarize_session(db_session, session, FakeLlmProvider(), sleep=_no_sleep)
+
+        summary = db_session.execute(
+            select(Summary).where(Summary.session_id == session.id)
+        ).scalar_one()
+        assert any(point["atSeconds"] is not None for point in summary.key_points)

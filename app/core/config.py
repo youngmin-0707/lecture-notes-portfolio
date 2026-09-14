@@ -51,6 +51,15 @@ class Settings(BaseSettings):
     MAX_AUDIO_DURATION_SECONDS: float = 240 * 60  # 240분
     MIN_DISK_FREE_BYTES: int = 1 * 1024 * 1024 * 1024  # 1GB
 
+    # --- 텍스트 파일 업로드 (2026-09-14) ---
+    # 오디오 대신 이미 텍스트로 정리된 자료(.txt/.md)를 올리면 전사를 건너뛰고 바로 요약한다.
+    # 텍스트는 오디오와 달리 수백 MB일 이유가 없으므로 용량 한도를 따로 훨씬 낮게 잡는다.
+    MAX_TEXT_UPLOAD_SIZE_BYTES: int = 5 * 1024 * 1024  # 5MB
+    # 요약할 내용이 사실상 없는 파일을 걸러내는 하한 (공백 제외 문자 수).
+    MIN_TEXT_CHARACTERS: int = 30
+    # 240분 강의 전사도 넉넉히 들어가는 상한 (실측상 한국어 기준 15만 자 안팎).
+    MAX_TEXT_CHARACTERS: int = 500_000
+
     # --- STT (§0 D3, §3.2) ---
     STT_PROVIDER: str = "local_whisper"
     STT_MODEL: str = "large-v3-turbo"

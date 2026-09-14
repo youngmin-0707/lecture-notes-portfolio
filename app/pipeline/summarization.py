@@ -29,6 +29,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
+from dataclasses import replace
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DBSession
@@ -42,7 +43,7 @@ from app.llm.chunking import TimedSegment
 from app.llm.map_reduce import summarize_transcript
 from app.llm.parsing import render_markdown
 from app.llm.schema import ParsedSummary
-from app.models.enums import SessionStatus
+from app.models.enums import SessionSource, SessionStatus
 from app.models.session import Session
 from app.models.summary import Summary
 from app.models.transcript import Transcript
@@ -80,6 +81,24 @@ def _delete_audio_if_configured(session: Session) -> None:
         return
     delete_stored_file(session.audio_path)
     session.audio_path = None
+
+
+def _drop_timestamps_without_timeline(parsed: ParsedSummary, session: Session) -> ParsedSummary:
+    """시간축이 아예 없는 세션(텍스트 파일 업로드, 2026-09-14)의 타임스탬프를 떼어낸다.
+
+    텍스트 업로드는 프롬프트에 들어가는 전사가 "[00:00] 본문 전체" 한 줄뿐인데, 그런데도
+    LLM이 그럴듯한 `atSeconds`(00:12, 00:36 …)를 지어내는 것을 로컬 모델로 실제로 확인했다.
+    재생할 오디오도 없어 클릭해 이동할 지점조차 없으므로, 없는 시각을 표시하느니 떼어낸다 —
+    `render_markdown()`은 `at_seconds`가 `None`이면 "[MM:SS]"를 붙이지 않는다. (세그먼트
+    유무가 아니라 `source`로 판단한다: 세그먼트 없이 텍스트만 있는 오디오 세션도 있는데,
+    그쪽은 여전히 오디오 재생 시각이라는 의미가 살아 있다.)
+    """
+    if session.source != SessionSource.TEXT.value or not parsed.key_points:
+        return parsed
+    return replace(
+        parsed,
+        key_points=[replace(point, at_seconds=None) for point in parsed.key_points],
+    )
 
 
 def _default_chunk_size_tokens(provider: LlmProvider) -> int:
@@ -257,6 +276,7 @@ def summarize_session(
             )
             break
         else:
+            parsed = _drop_timestamps_without_timeline(parsed, session)
             _persist_summary(db, session, provider, parsed)
             _apply_suggested_title(session, parsed)
             session.status = SessionStatus.DONE.value

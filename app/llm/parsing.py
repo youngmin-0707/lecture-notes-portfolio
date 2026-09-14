@@ -133,3 +133,24 @@ def render_markdown(parsed: ParsedSummary) -> str:
     lines += ["", parsed.detailed_notes.strip()]
 
     return "\n".join(lines)
+
+
+_ONE_LINE_SUMMARY_MARKER = "## 한 줄 요약\n"
+
+
+def extract_one_line_summary(content_markdown: str) -> str:
+    """`content_markdown`에서 "## 한 줄 요약" 섹션 본문만 뽑아낸다.
+
+    `render_markdown()`이 이 섹션을 항상 맨 앞에 결정론적으로 넣으므로(위 참고) 문자열
+    탐색만으로 안전하게 뽑을 수 있다. 목록 미리보기(`app/api/v1/sessions.py`의
+    `_extract_summary_preview`)와 요약 수정(2026-09-14, `update_summary`)이 공유해서 쓴다
+    — 사용자가 본문만 고치고 한 줄 요약은 그대로 둘 때, 현재 값을 다시 물어보지 않고 이
+    함수로 읽어와 `content_markdown` 재조립에 쓴다.
+    """
+    start = content_markdown.find(_ONE_LINE_SUMMARY_MARKER)
+    if start == -1:
+        return content_markdown.strip()
+    start += len(_ONE_LINE_SUMMARY_MARKER)
+    end = content_markdown.find("\n##", start)
+    text = content_markdown[start:] if end == -1 else content_markdown[start:end]
+    return text.strip()

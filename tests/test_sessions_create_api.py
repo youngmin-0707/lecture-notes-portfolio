@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from app.core.config import settings
-from app.models import Session
+from app.models import Session, Summary, Transcript
 
 
 @pytest.fixture(autouse=True)
@@ -236,3 +236,158 @@ class TestValidationErrors:
 
         assert response.status_code == 400
         assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+class TestTextFileUpload:
+    """텍스트 파일(.txt/.md) 업로드 — 전사를 건너뛰고 곧바로 요약으로 이어진다 (2026-09-14)."""
+
+    def test_txt_upload_creates_session_with_transcript_and_starts_summarizing(
+        self, client, db_session, _isolated_audio_storage: Path
+    ) -> None:
+        content = (
+            "오늘 수업에서는 이진 탐색 트리의 삽입과 삭제를 다뤘다.\n시간복잡도는 O(log n)이다."
+        )
+
+        response = client.post(
+            "/api/v1/sessions",
+            files={"file": ("lecture-note.txt", content.encode(), "text/plain")},
+            data={"title": "자료구조 8주차", "course": "자료구조", "autoProcess": "true"},
+        )
+
+        assert response.status_code == 201, response.text
+        body = response.json()
+        assert body["source"] == "TEXT"
+        # 전사 단계를 건너뛰므로 TRANSCRIBING이 아니라 바로 SUMMARIZING이다.
+        assert body["status"] == "SUMMARIZING"
+        assert body["durationSeconds"] is None
+        assert body["originalFilename"] == "lecture-note.txt"
+        assert body["fileSizeBytes"] == len(content.encode())
+
+        stored = db_session.get(Session, body["sessionId"])
+        assert stored is not None
+        assert stored.mime_type == "text/plain"
+        # 오디오가 없는 세션이므로 저장 경로도, 남은 업로드 파일도 없다.
+        assert stored.audio_path is None
+        assert _all_files(_isolated_audio_storage) == []
+
+        transcript = (
+            db_session.query(Transcript).filter(Transcript.session_id == stored.id).one_or_none()
+        )
+        assert transcript is not None
+        assert transcript.text_raw == content
+        assert transcript.provider == "text_upload"
+        assert transcript.segments == []
+
+    def test_markdown_upload_is_accepted(self, client, db_session) -> None:
+        content = "# 8주차\n\n- 이진 탐색 트리의 삽입과 삭제를 다뤘다.\n- 시간복잡도는 O(log n)."
+
+        response = client.post(
+            "/api/v1/sessions",
+            files={"file": ("note.md", content.encode(), "text/markdown")},
+        )
+
+        assert response.status_code == 201, response.text
+        body = response.json()
+        assert body["status"] == "SUMMARIZING"
+        stored = db_session.get(Session, body["sessionId"])
+        assert stored.mime_type == "text/markdown"
+
+    def test_autoprocess_false_stays_transcribed(self, client) -> None:
+        """자동 처리를 끄면 "전사까지는 끝난" 상태(TRANSCRIBED)에서 멈춘다."""
+        content = "오늘 수업에서는 이진 탐색 트리의 삽입과 삭제를 다뤘다." * 2
+
+        response = client.post(
+            "/api/v1/sessions",
+            files={"file": ("note.txt", content.encode(), "text/plain")},
+            data={"autoProcess": "false"},
+        )
+
+        assert response.status_code == 201, response.text
+        assert response.json()["status"] == "TRANSCRIBED"
+
+    def test_cp949_encoded_text_is_accepted(self, client, db_session) -> None:
+        content = "오늘 수업에서는 이진 탐색 트리의 삽입과 삭제를 다뤘다." * 2
+
+        response = client.post(
+            "/api/v1/sessions",
+            files={"file": ("note.txt", content.encode("cp949"), "text/plain")},
+        )
+
+        assert response.status_code == 201, response.text
+        stored = db_session.get(Session, response.json()["sessionId"])
+        transcript = (
+            db_session.query(Transcript).filter(Transcript.session_id == stored.id).one_or_none()
+        )
+        assert transcript is not None and transcript.text_raw == content
+
+    def test_rejects_too_short_text(
+        self, client, db_session, _isolated_audio_storage: Path
+    ) -> None:
+        response = client.post(
+            "/api/v1/sessions",
+            files={"file": ("note.txt", "짧은 메모".encode(), "text/plain")},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "TEXT_TOO_SHORT"
+        assert db_session.query(Session).count() == 0
+        assert _all_files(_isolated_audio_storage) == []
+
+    def test_rejects_binary_disguised_as_txt(
+        self, client, db_session, _isolated_audio_storage: Path
+    ) -> None:
+        """확장자만 .txt인 바이너리는 디코딩 단계에서 걸러진다."""
+        response = client.post(
+            "/api/v1/sessions",
+            files={"file": ("note.txt", b"PK\x03\x04\x00\x00" * 30, "text/plain")},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "INVALID_TEXT_FILE"
+        assert db_session.query(Session).count() == 0
+        assert _all_files(_isolated_audio_storage) == []
+
+    def test_rejects_text_file_over_size_limit(
+        self, client, db_session, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(settings, "MAX_TEXT_UPLOAD_SIZE_BYTES", 1024)
+
+        response = client.post(
+            "/api/v1/sessions",
+            files={"file": ("note.txt", b"a" * 2048, "text/plain")},
+        )
+
+        assert response.status_code == 413
+        assert response.json()["error"]["code"] == "FILE_TOO_LARGE"
+        assert db_session.query(Session).count() == 0
+
+    def test_text_session_runs_to_done_without_stt(self, real_client, engine) -> None:
+        """실제 커밋 + 백그라운드 실행 경로: 텍스트 업로드 한 번으로 요약(DONE)까지 간다."""
+        from sqlalchemy.orm import Session as ORMSession
+
+        content = "오늘 수업에서는 이진 탐색 트리의 삽입과 삭제를 다뤘다." * 3
+
+        response = real_client.post(
+            "/api/v1/sessions",
+            files={"file": ("note.txt", content.encode(), "text/plain")},
+        )
+        assert response.status_code == 201, response.text
+        session_id = response.json()["sessionId"]
+
+        check_db = ORMSession(bind=engine, future=True)
+        try:
+            persisted = check_db.get(Session, session_id)
+            assert persisted.status == "DONE"
+            # 전사는 업로드된 텍스트 그대로여야 한다 (STT가 끼어들지 않았다).
+            transcript = (
+                check_db.query(Transcript).filter(Transcript.session_id == session_id).one()
+            )
+            assert transcript.text_raw == content
+            assert transcript.provider == "text_upload"
+            assert check_db.query(Summary).filter(Summary.session_id == session_id).count() == 1
+        finally:
+            check_db.query(Summary).filter(Summary.session_id == session_id).delete()
+            check_db.query(Transcript).filter(Transcript.session_id == session_id).delete()
+            check_db.query(Session).filter(Session.id == session_id).delete()
+            check_db.commit()
+            check_db.close()

@@ -13,7 +13,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 logger = logging.getLogger("app.errors")
 
-# 에러코드별 HTTP status + 기본 한국어 메시지 (요구사항 §5.1 전체 17개 코드).
+# 에러코드별 HTTP status + 기본 한국어 메시지 (요구사항 §5.1 전체 17개 코드 +
+# 이후 추가된 QUIZ_NOT_FOUND, 텍스트 업로드용 INVALID_TEXT_FILE/TEXT_TOO_SHORT/TEXT_TOO_LONG).
 # `NOT_FOUND`/`HTTP_ERROR`는 §5.1에 없는 코드지만, 라우트 미존재(404)나 그 외 Starlette
 # HTTPException(예: 405)을 감쌀 표준 폴백으로 둔다.
 CODE_STATUS: dict[str, int] = {
@@ -21,6 +22,9 @@ CODE_STATUS: dict[str, int] = {
     "INVALID_AUDIO_FILE": 400,
     "AUDIO_TOO_SHORT": 400,
     "AUDIO_TOO_LONG": 400,
+    "INVALID_TEXT_FILE": 400,
+    "TEXT_TOO_SHORT": 400,
+    "TEXT_TOO_LONG": 400,
     "SESSION_NOT_FOUND": 404,
     "INVALID_SESSION_STATE": 409,
     "TRANSCRIPT_NOT_READY": 409,
@@ -45,13 +49,18 @@ CODE_MESSAGES: dict[str, str] = {
     "INVALID_AUDIO_FILE": "오디오 파일을 읽을 수 없습니다.",
     "AUDIO_TOO_SHORT": "오디오가 너무 짧습니다.",
     "AUDIO_TOO_LONG": "오디오 길이가 최대 240분을 초과합니다.",
+    "INVALID_TEXT_FILE": "텍스트 파일을 읽을 수 없습니다.",
+    "TEXT_TOO_SHORT": "요약할 내용이 너무 짧습니다.",
+    "TEXT_TOO_LONG": "텍스트가 너무 깁니다.",
     "SESSION_NOT_FOUND": "세션을 찾을 수 없습니다.",
     "INVALID_SESSION_STATE": "현재 상태에서는 수행할 수 없습니다.",
     "TRANSCRIPT_NOT_READY": "전사가 아직 완료되지 않았습니다.",
     "SUMMARY_NOT_READY": "요약이 아직 완료되지 않았습니다.",
     "QUIZ_NOT_FOUND": "복습 문제를 찾을 수 없습니다.",
     "FILE_TOO_LARGE": "파일 크기가 최대 500MB를 초과합니다.",
-    "UNSUPPORTED_AUDIO_FORMAT": "지원하지 않는 오디오 형식입니다.",
+    "UNSUPPORTED_AUDIO_FORMAT": (
+        "지원하지 않는 파일 형식입니다 (오디오 또는 텍스트 파일만 올릴 수 있습니다)."
+    ),
     "STT_MODEL_UNAVAILABLE": "음성 인식 모델을 준비할 수 없습니다.",
     "STT_FAILED": "전사에 실패했습니다.",
     "LLM_NOT_CONFIGURED": "요약 엔진이 설정되지 않았습니다.",

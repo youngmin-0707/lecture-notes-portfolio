@@ -1,4 +1,92 @@
-# 인수인계 — `lecture-notes` (2026-08-22~09-01 연속 세션 갱신)
+# 인수인계 — `lecture-notes` (2026-08-22~09-14 연속 세션 갱신)
+
+## -7. 2026-09-14 추가 갱신 (요약 내용 직접 수정 + 세션 삭제 UI 연결)
+
+**아직 커밋 안 함.** §-6과 같은 세션, 백엔드/프론트 모두 작업 트리에만 있음.
+
+- **배경**: "요약한 파일 내용이 마음에 안 들면 직접 고치거나, 아예 지울 수 있게 해달라"는
+  요청. 세션 삭제(`DELETE /sessions/{id}`)는 이미 T-24/US-18로 백엔드에 구현·테스트돼
+  있었는데 **프론트에서 어디에도 연결돼 있지 않았다**(`deleteSession()` API 함수가 죽은
+  코드였음) — 이번에 세션 상세 화면에 실제로 연결했다.
+- **백엔드 — 요약 수정 (`PATCH /api/v1/sessions/{id}/summary`, 신규)**:
+  `app/api/v1/sessions.py::update_summary`. 요청 바디(`UpdateSummaryRequest`)는
+  `oneLineSummary`/`detailedNotesMarkdown` 둘 다 선택(부분 업데이트) — "핵심 주제"
+  (`keyPoints`, 타임스탬프 포함)는 이 라우트로 건드리지 않는다(재생 시각과 묶여 있어 텍스트만
+  고치면 원문과 어긋나므로 의도적으로 뺐다). 처리 중(TRANSCRIBING/SUMMARIZING)이면
+  `INVALID_SESSION_STATE`, 요약 자체가 없으면 `SUMMARY_NOT_READY`(기존 §5.1 코드 재사용,
+  새 에러코드 추가 없음). 재요약(LLM 재호출, `POST .../summarize`)과 달리 비용·지연 없이
+  즉시 반영된다. `content_markdown`은 매번 `render_markdown()`으로 다시 조립하는데, 이때
+  건드리지 않은 `oneLineSummary`의 현재 값을 알아야 해서 `app/llm/parsing.py`에
+  `extract_one_line_summary()`를 새로 뽑아냈다 — 기존 `_extract_summary_preview`(목록
+  미리보기)도 이 함수로 리팩터링해 로직이 두 곳에 중복되지 않게 했다.
+- **프론트 — 요약 수정 UI**: `sessionDetail.ts`에 "✎ 수정" 버튼(요약 탭 상단, 처리 중일 땐
+  숨김) → 인라인 편집 폼으로 전환. **처음엔 원문 마크다운만 보이는 `<textarea>` 하나였는데,
+  사용자가 "화면이 통째로 바뀌는 느낌이라 보면서 고치기 어렵다"고 피드백** → 완전
+  인라인(WYSIWYG, contenteditable) 편집과 실시간 미리보기 중 하나를 골라달라고 물었고(전자는
+  저장 시 HTML→마크다운 역변환 과정에서 제목/목록 구조가 깨질 위험이 있어 비권장으로 제시),
+  **실시간 미리보기**를 선택받아 적용했다: 본문 textarea 옆(`.summary-edit-split`, 좁은
+  화면 700px 이하는 위아래로 쌓임)에 `renderMarkdown()`(기존 요약 탭이 쓰던 렌더러 그대로
+  재사용)으로 즉석 렌더링한 미리보기 패널을 두고, textarea `input` 이벤트마다
+  `updateSummaryEditPreview()`가 다시 그린다. 저장되는 값은 항상 순수 마크다운 그대로라
+  내보내기(MD/TXT)·재조립 로직과 완전히 호환된다.
+- **프론트 — 세션 삭제 UI 연결**: 세션 상세 화면 맨 아래 "danger zone"에 "세션 삭제" 버튼
+  추가(`.btn--delete`, 처리 중이면 disabled). 클릭 시 `window.confirm()`으로 한 번 더
+  확인(되돌릴 수 없는 동작이라 §서비스 전역에서 유일하게 confirm을 쓰는 곳) → 성공하면
+  `navigate("#/")`로 홈 이동, 실패하면 버튼을 원상 복구하고 에러 메시지 표시.
+- 테스트: 백엔드 신규 `tests/test_sessions_summary_edit_api.py`(12개: 404/409/검증/부분
+  업데이트/keyPoints 보존/빈 바디 no-op/내보내기 반영까지) 포함 **451 passed / 4 skipped**,
+  프론트 6 passed + `tsc --noEmit` + `ruff` 클린.
+- 실브라우저 검증: 격리 인스턴스(8767/8768 포트 + 임시 SQLite, 프론트 5197/5198)에 세션을
+  직접 시딩해 ①요약 수정 저장→API로 반영 확인, ②처리 중 상태에서 수정/삭제 버튼이 실제로
+  비활성화되는지, ③실시간 미리보기가 타이핑마다 갱신되는지, ④삭제 확인 다이얼로그→실제 204
+  삭제→홈 이동→`GET`이 404로 바뀌는지까지 전부 확인(콘솔 에러 0건). **운영 DB엔 검증
+  데이터가 들어가지 않았다.**
+
+## -6. 2026-09-14 갱신 (텍스트 파일 업로드 → 전사 건너뛰고 바로 요약)
+
+**아직 커밋 안 함.** 백엔드/프론트 모두 작업 트리에만 있음.
+
+- **배경**: 이미 텍스트로 정리된 자료(다른 도구로 뽑은 전사문, 수업 필기 등)를 그대로 올려
+  요약만 받고 싶다는 요청. 오디오가 아니므로 전사(STT) 단계가 아예 필요 없다.
+- **백엔드**
+  - `app/text/validation.py`(신규): 텍스트 업로드 판별·디코딩·길이 검증. **오디오와 달리
+    확장자를 본다** — 텍스트에는 매직 넘버가 없어 내용만으로 "텍스트다"라고 단정하면 깨진
+    오디오가 조용히 텍스트로 처리된다. 확장자 화이트리스트(`txt`/`md`/`markdown`)로 진입
+    조건을 정한 뒤, 내용이 실제로 디코딩되는지(utf-8-sig → cp949, 제어문자 없음) 확인하는
+    2단 구조. 길이 하한/상한은 `settings.MIN_TEXT_CHARACTERS`(30) /
+    `MAX_TEXT_CHARACTERS`(500,000), 용량 한도는 `MAX_TEXT_UPLOAD_SIZE_BYTES`(5MB).
+  - `POST /sessions`(`app/api/v1/sessions.py`): 텍스트면 업로드 본문을 `transcripts` 1건으로
+    저장(`provider="text_upload"`, 세그먼트 없음)하고 세션은 `TRANSCRIBED`에서 출발한다.
+    `autoProcess=true`면 응답 status가 **`SUMMARIZING`**이고, 기존 `run_pipeline()`의
+    "전사가 이미 있으면 STT 건너뜀"(§2.4) 규칙을 그대로 타고 요약만 실행된다 — 파이프라인
+    쪽에는 텍스트 전용 분기를 만들지 않았다. 업로드 원본 파일은 본문이 DB에 들어간 직후 삭제
+    (`audio_path=NULL`, `source="TEXT"`, `duration_seconds=NULL`, mime `text/plain|markdown`).
+  - `POST /sessions/{id}/process`: 전사가 이미 있으면 응답 status를 `TRANSCRIBING`이 아니라
+    `SUMMARIZING`으로 준다(실제로 하게 될 일과 화면 표시를 맞춤). 텍스트 세션 재시도 경로.
+  - `SessionSource.TEXT` 추가, `GET /sessions/{id}` 응답에 `source` 필드 추가(화면이 "오디오
+    없음"을 올바른 이유로 설명하기 위해). DB 스키마 변경 없음 — 마이그레이션 불필요.
+  - 새 에러코드 `INVALID_TEXT_FILE`/`TEXT_TOO_SHORT`/`TEXT_TOO_LONG`(전부 400),
+    `UNSUPPORTED_AUDIO_FORMAT` 문구를 "오디오 또는 텍스트"로 갱신.
+  - **환각 타임스탬프 제거**(`app/pipeline/summarization.py::_drop_timestamps_without_timeline`):
+    텍스트 세션은 프롬프트 전사가 "[00:00] 본문 전체" 한 줄뿐인데도 LLM이 [00:12]/[00:36]
+    같은 시각을 지어내는 걸 로컬 qwen3:14b로 실제 확인했다. `source == "TEXT"`면 저장 전
+    `atSeconds`를 전부 `None`으로 떨어뜨린다(세그먼트 유무가 아니라 source로 판단 — 세그먼트
+    없이 텍스트만 있는 오디오 세션은 여전히 재생 시각이라는 의미가 살아 있다).
+- **프론트**: 드롭존이 `txt/md/markdown`도 받고(accept + 1차 검증, 텍스트는 5MB 한도), 안내
+  문구를 오디오/텍스트 2줄로 분리, 제목을 "강의 업로드"로. 업로드 성공 문구는 응답 status가
+  `SUMMARIZING`이면 "요약을 시작했습니다". 상세 화면은 `source==="TEXT"`면 오디오 안내
+  문구를 "텍스트 파일로 등록한 세션이라 오디오가 없습니다"로 바꾸고, 세그먼트 없는 전사는
+  본문을 그대로 렌더링(`.transcript-plain`, 예전엔 "전사 세그먼트가 없습니다"만 떴다).
+  `keyPoints[].atSeconds`가 `null`이면 타임스탬프 버튼을 아예 안 그린다.
+- 테스트: 백엔드 **439 passed / 4 skipped**(신규 `tests/test_text_validation.py` 18개,
+  `test_sessions_create_api.py::TestTextFileUpload` 8개, `test_pipeline_summarization.py::
+  TestTextSessionHasNoTimestamps` 2개), 프론트 6 passed + `tsc --noEmit` + `ruff` 클린.
+- 실브라우저 검증: 격리 인스턴스(포트 8766 + 임시 SQLite, 프론트 5199, LLM=로컬 ollama)로
+  실제 `.txt` 업로드 → "요약을 시작했습니다" → 목록 "요약 중" → DONE → 상세 화면에서 요약/
+  전사 탭·오디오 안내 문구·타임스탬프 없음까지 확인(콘솔 에러 0건). 검증 데이터는 운영 DB에
+  들어가지 않았고, 검증 후 `launchctl kickstart -k gui/$(id -u)/com.lecturenotes.backend`로
+  운영 백엔드를 새 코드로 재시작해 둠(세션 49건 전부 DONE 상태라 중단된 작업 없음).
+
 
 ## -5. 2026-09-01 갱신 (복습 키워드 섹션 제거)
 

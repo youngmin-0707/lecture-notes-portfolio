@@ -14,6 +14,18 @@ class UpdateSessionRequest(CamelModel):
     course: str | None = Field(default=None, max_length=100)
 
 
+class UpdateSummaryRequest(CamelModel):
+    """PATCH /api/v1/sessions/{id}/summary 요청 바디 (2026-09-14). 부분 업데이트 — 전부 선택.
+
+    요약 결과가 마음에 들지 않을 때, 재요약(LLM 재호출)을 기다리지 않고 직접 고칠 수 있게
+    한다. "핵심 주제"(`keyPoints`, 타임스탬프 포함)는 여기서 건드리지 않는다 — 재생 시각과
+    묶여 있는 값이라 텍스트만 따로 고치면 원문과 어긋난다.
+    """
+
+    one_line_summary: str | None = Field(default=None, min_length=1, max_length=500)
+    detailed_notes_markdown: str | None = Field(default=None, min_length=1, max_length=200_000)
+
+
 class SessionCreateResponse(CamelModel):
     """POST /api/v1/sessions 응답 (§5.3 ①).
 
@@ -135,6 +147,9 @@ class SessionDetailResponse(CamelModel):
     title: str
     course: str | None
     status: str
+    # 오디오 업로드/녹음/텍스트 파일 업로드를 구분한다 (2026-09-14 `TEXT` 추가). 화면이
+    # "오디오가 없다"는 사실을 올바른 이유로 설명하려면 이 값이 필요하다.
+    source: str
     duration_seconds: float | None
     recorded_at: UtcDateTime
     error_code: str | None = None

@@ -21,8 +21,9 @@ from fastapi.responses import FileResponse, Response
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session as DBSession
 
-from app.audio.storage import delete_stored_file, save_upload_stream
+from app.audio.storage import SavedUpload, delete_stored_file, save_upload_stream
 from app.audio.validation import detect_audio_format, probe_audio, validate_duration_seconds
+from app.core.config import settings
 from app.core.errors import AppError
 from app.db.session import get_db
 from app.export import (
@@ -32,6 +33,9 @@ from app.export import (
     render_srt_export,
     render_txt_export,
 )
+from app.glossary.correction import correct_transcript_text, fetch_applicable_terms
+from app.llm.parsing import extract_one_line_summary, render_markdown
+from app.llm.schema import ParsedSummary, SummaryKeyPoint
 from app.models.enums import QuizStatus, SessionSource, SessionStatus
 from app.models.quiz import Quiz
 from app.models.session import Session as SessionModel
@@ -67,6 +71,13 @@ from app.schemas.session import (
     TranscriptInfoResponse,
     TranscriptSegmentResponse,
     UpdateSessionRequest,
+    UpdateSummaryRequest,
+)
+from app.text.validation import (
+    is_text_upload,
+    load_text_upload,
+    text_mime_type,
+    text_upload_extension,
 )
 
 # §5.3⑤ summaryPreview: 목록에 본문을 싣지 않으려고 짧게 자른다.
@@ -85,6 +96,52 @@ def _default_title(now: datetime) -> str:
     return f"{now:%Y-%m-%d} 수업"
 
 
+# 텍스트 업로드로 만들어진 `transcripts` 행의 provider 값 (2026-09-14). STT provider 이름
+# 자리에 "전사한 것이 아니라 사용자가 올린 텍스트"임을 남겨, 나중에 전사 출처를 구분할 수 있게 한다.
+TEXT_UPLOAD_TRANSCRIPT_PROVIDER = "text_upload"
+
+
+async def _save_upload_for_create(file: UploadFile, *, is_text: bool) -> SavedUpload:
+    """업로드를 디스크에 저장한다. 텍스트 업로드는 용량 한도·에러 문구가 오디오와 다르다."""
+    if not is_text:
+        return await save_upload_stream(file)
+
+    try:
+        return await save_upload_stream(file, max_bytes=settings.MAX_TEXT_UPLOAD_SIZE_BYTES)
+    except AppError as exc:
+        if exc.code == "FILE_TOO_LARGE":
+            limit_mb = settings.MAX_TEXT_UPLOAD_SIZE_BYTES // (1024 * 1024)
+            raise AppError(
+                "FILE_TOO_LARGE", message=f"텍스트 파일 크기가 최대 {limit_mb}MB를 초과합니다."
+            ) from exc
+        if exc.code == "INVALID_AUDIO_FILE":  # 빈 파일 — 텍스트 경로에서는 "내용 없음"이다.
+            raise AppError("TEXT_TOO_SHORT") from exc
+        raise
+
+
+def _persist_uploaded_text_as_transcript(db: DBSession, session: SessionModel, text: str) -> None:
+    """업로드된 텍스트를 그대로 전사 1건으로 저장한다 (2026-09-14).
+
+    세그먼트(시간 구간)는 만들지 않는다 — 타임스탬프가 없는 자료이기 때문이다. 요약
+    파이프라인은 세그먼트가 없으면 본문 전체를 0초 시점 세그먼트 하나로 취급하므로
+    (`app/pipeline/summarization.py::_build_timed_segments`) 별도 분기 없이 그대로 요약된다.
+    용어집 보정(§3.3)은 전사 경로와 똑같이 적용한다.
+    """
+    glossary_terms = fetch_applicable_terms(db, session.course)
+    db.add(
+        Transcript(
+            session_id=session.id,
+            text_raw=text,
+            text_corrected=correct_transcript_text(text, glossary_terms),
+            language=settings.STT_LANGUAGE,
+            provider=TEXT_UPLOAD_TRANSCRIPT_PROVIDER,
+            provider_model=text_upload_extension(session.original_filename) or "txt",
+            elapsed_seconds=None,
+        )
+    )
+    db.flush()
+
+
 @router.post("/sessions", status_code=201, response_model=SessionCreateResponse)
 async def create_session(
     file: Annotated[UploadFile, File()],
@@ -94,16 +151,32 @@ async def create_session(
     course: Annotated[str | None, Form(max_length=100)] = None,
     autoProcess: Annotated[bool, Form()] = True,  # noqa: N803 (§5.1 camelCase 요청 필드)
 ) -> SessionCreateResponse:
-    saved = await save_upload_stream(file)
+    """오디오 또는 텍스트 파일 업로드로 세션을 만든다 (§5.3①, 2026-09-14 텍스트 지원 추가).
+
+    텍스트 파일(.txt/.md)은 전사할 것이 없으므로 업로드 본문이 곧바로 `transcripts`가 되고,
+    `autoProcess=true`면 전사 단계를 건너뛴 채 요약(`SUMMARIZING`)부터 시작한다.
+    """
+    is_text = is_text_upload(file.filename)
+    saved = await _save_upload_for_create(file, is_text=is_text)
 
     try:
-        detected = detect_audio_format(saved.header)
-        if detected is None:
-            raise AppError("UNSUPPORTED_AUDIO_FORMAT")
-        _format_key, mime_type = detected
+        if is_text:
+            text = load_text_upload(saved.path)
+            mime_type = text_mime_type(file.filename)
+            source = SessionSource.TEXT.value
+            audio_path = None
+            duration_seconds = None
+        else:
+            detected = detect_audio_format(saved.header)
+            if detected is None:
+                raise AppError("UNSUPPORTED_AUDIO_FORMAT")
+            _format_key, mime_type = detected
 
-        probe = probe_audio(saved.path)
-        validate_duration_seconds(probe.duration_seconds)
+            probe = probe_audio(saved.path)
+            validate_duration_seconds(probe.duration_seconds)
+            source = SessionSource.UPLOAD.value
+            audio_path = str(saved.path)
+            duration_seconds = probe.duration_seconds
 
         now = datetime.now(UTC)
         explicit_title = (title or "").strip()
@@ -113,26 +186,39 @@ async def create_session(
             title_customized=bool(explicit_title),
             course=course,
             status=SessionStatus.UPLOADED.value,
-            source=SessionSource.UPLOAD.value,
-            audio_path=str(saved.path),
-            original_filename=file.filename or "audio",
+            source=source,
+            audio_path=audio_path,
+            original_filename=file.filename or ("lecture.txt" if is_text else "audio"),
             mime_type=mime_type,
             file_size_bytes=saved.total_bytes,
-            duration_seconds=probe.duration_seconds,
+            duration_seconds=duration_seconds,
             recorded_at=now,
         )
         db.add(session)
         db.flush()
+        if is_text:
+            _persist_uploaded_text_as_transcript(db, session, text)
+            # 전사에 해당하는 내용이 이미 확보됐으므로 UPLOADED가 아니라 TRANSCRIBED에서 출발한다.
+            session.status = SessionStatus.TRANSCRIBED.value
+            db.flush()
         db.refresh(session)
     except Exception:
         # §5.3 ①: 검증 실패 시 파일 미저장, 저장(DB) 실패 시 레코드·파일 모두 롤백.
         delete_stored_file(saved.path)
         raise
 
+    if is_text:
+        # 본문이 이미 DB(transcripts)에 들어갔으니 업로드 원본 파일은 남길 이유가 없다
+        # (오디오도 요약이 끝나면 지우는 §2026-08-29 정책과 같은 취지).
+        delete_stored_file(saved.path)
+
     # US-02, T-19: autoProcess=true면 응답 시점 status가 TRANSCRIBING이고, 전사→요약이
-    # 백그라운드로 자동 시작된다 (§5.3①).
+    # 백그라운드로 자동 시작된다 (§5.3①). 텍스트 업로드는 전사가 이미 있으므로
+    # `run_pipeline()`이 STT를 건너뛰고 요약만 하며, 응답 status도 SUMMARIZING이다.
     if autoProcess:
-        session.status = SessionStatus.TRANSCRIBING.value
+        session.status = (
+            SessionStatus.SUMMARIZING.value if is_text else SessionStatus.TRANSCRIBING.value
+        )
         db.flush()
         background_tasks.add_task(run_pipeline_in_background, session.id)
 
@@ -157,17 +243,10 @@ def _extract_summary_preview(
     """`content_markdown`의 "## 한 줄 요약" 섹션만 뽑아 미리보기로 자른다 (§5.3⑤).
 
     새 스키마·필드를 추가하지 않고, 항상 존재가 보장되는 6섹션 마크다운(US-05)의 첫 섹션에서
-    결정론적으로 추출한다.
+    결정론적으로 추출한다. 추출 자체는 `extract_one_line_summary()`(2026-09-14, 요약 수정
+    라우트와 공유)에 위임하고 여기서는 미리보기 길이로 자르기만 한다.
     """
-    marker = "## 한 줄 요약\n"
-    start = content_markdown.find(marker)
-    if start == -1:
-        text = content_markdown
-    else:
-        start += len(marker)
-        end = content_markdown.find("\n##", start)
-        text = content_markdown[start:] if end == -1 else content_markdown[start:end]
-    return text.strip()[:max_length]
+    return extract_one_line_summary(content_markdown)[:max_length]
 
 
 @router.get("/sessions", response_model=SessionListResponse)
@@ -302,7 +381,18 @@ def process_session(
 
     request = body or ProcessRequest()
 
-    session.status = SessionStatus.TRANSCRIBING.value
+    # 전사가 이미 있으면 `run_pipeline()`이 STT를 건너뛰고 요약만 한다(§2.4) — 텍스트 업로드
+    # 세션의 재시도가 대표적이다. 그 경우 응답 status도 실제로 하게 될 일(SUMMARIZING)로
+    # 알려준다. "전사 중"이라고 표시해두면 화면에 잘못된 단계가 보인다 (2026-09-14).
+    has_transcript = (
+        db.execute(select(Transcript.id).where(Transcript.session_id == session.id)).first()
+        is not None
+    )
+    session.status = (
+        SessionStatus.SUMMARIZING.value
+        if has_transcript and not request.skip_summary
+        else SessionStatus.TRANSCRIBING.value
+    )
     session.error_code = None
     session.error_message = None
     db.flush()
@@ -422,6 +512,60 @@ def update_session_metadata(
     return _build_session_detail_response(db, session)
 
 
+@router.patch("/sessions/{session_id}/summary", response_model=SessionDetailResponse)
+def update_summary(
+    session_id: str,
+    body: UpdateSummaryRequest,
+    db: Annotated[DBSession, Depends(get_db, scope="function")],
+) -> SessionDetailResponse:
+    """요약 내용을 사용자가 직접 고친다 (2026-09-14, "요약이 마음에 안 들 때" 대응).
+
+    LLM을 다시 호출하는 재요약(`POST .../summarize`, §5.3⑥)과 달리 비용·시간 없이 즉시
+    반영된다. `content_markdown`은 항상 `render_markdown()`으로 다시 조립해 최신 상태로
+    맞춘다 — MD 내보내기(§5.3⑦)와 목록 미리보기(§5.3⑤)가 이 필드를 그대로 쓰기 때문이다.
+    두 필드 중 하나만 보내면 나머지는 현재 값을 그대로 유지한 채 재조립한다.
+    """
+    session = _get_session_or_404(db, session_id)
+    if session.status in _PROCESSING_STATUSES:
+        # 백그라운드 파이프라인이 같은 summaries 행을 새로 쓰는 중일 수 있다 — 경합 방지.
+        raise AppError("INVALID_SESSION_STATE")
+
+    summary = db.execute(
+        select(Summary)
+        .where(Summary.session_id == session.id)
+        .order_by(Summary.created_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if summary is None:
+        raise AppError("SUMMARY_NOT_READY")
+
+    one_line_summary = (
+        body.one_line_summary.strip()
+        if body.one_line_summary is not None
+        else extract_one_line_summary(summary.content_markdown)
+    )
+    detailed_notes_markdown = (
+        body.detailed_notes_markdown.strip()
+        if body.detailed_notes_markdown is not None
+        else summary.detailed_notes_markdown
+    )
+
+    parsed = ParsedSummary(
+        one_line_summary=one_line_summary,
+        key_points=[
+            SummaryKeyPoint(text=p["text"], at_seconds=p.get("atSeconds"))
+            for p in summary.key_points
+        ],
+        keywords=list(summary.keywords),
+        detailed_notes=detailed_notes_markdown,
+    )
+    summary.content_markdown = render_markdown(parsed)
+    summary.detailed_notes_markdown = detailed_notes_markdown
+    db.flush()
+
+    return _build_session_detail_response(db, session)
+
+
 def _build_session_detail_response(db: DBSession, session: SessionModel) -> SessionDetailResponse:
     transcript = db.execute(
         select(Transcript).where(Transcript.session_id == session.id)
@@ -491,6 +635,7 @@ def _build_session_detail_response(db: DBSession, session: SessionModel) -> Sess
         title=session.title,
         course=session.course,
         status=session.status,
+        source=session.source,
         duration_seconds=session.duration_seconds,
         recorded_at=session.recorded_at,
         error_code=session.error_code,
