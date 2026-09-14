@@ -9,7 +9,8 @@ export type SessionStatus =
   | "DONE"
   | "FAILED";
 
-export type SessionSource = "UPLOAD" | "RECORD";
+/** 2026-09-14: 오디오 대신 텍스트 파일(.txt/.md)을 올린 세션은 "TEXT"다. */
+export type SessionSource = "UPLOAD" | "RECORD" | "TEXT";
 
 export type ProgressStage = "TRANSCRIBING" | "SUMMARIZING";
 
@@ -42,7 +43,8 @@ export interface CreateSessionResponse {
   source: SessionSource;
   originalFilename: string;
   fileSizeBytes: number;
-  durationSeconds: number;
+  /** 텍스트 파일 업로드에는 재생 길이가 없다(null). */
+  durationSeconds: number | null;
   recordedAt: string;
   createdAt: string;
   pollAfterSeconds?: number;
@@ -85,7 +87,8 @@ export interface SessionTranscriptInfo {
 
 export interface SummaryKeyPoint {
   text: string;
-  atSeconds: number;
+  /** 시간축이 없는 전사(텍스트 파일 업로드, 2026-09-14)에서는 null이다. */
+  atSeconds: number | null;
 }
 
 export interface SummaryConcept {
@@ -127,6 +130,7 @@ export interface SessionDetailResponse {
   title: string;
   course: string | null;
   status: SessionStatus;
+  source: SessionSource;
   durationSeconds?: number;
   recordedAt?: string;
   progress?: SessionProgress;
@@ -283,6 +287,17 @@ export interface ListGlossaryParams {
 export interface UpdateSessionRequest {
   title?: string;
   course?: string;
+}
+
+/**
+ * PATCH /sessions/{id}/summary 요청 (2026-09-14, 요약 내용 직접 수정).
+ *
+ * 둘 다 선택이며 보낸 필드만 갱신된다 — "핵심 주제"(keyPoints, 타임스탬프 포함)는 이
+ * 엔드포인트로 건드릴 수 없다.
+ */
+export interface UpdateSummaryRequest {
+  oneLineSummary?: string;
+  detailedNotesMarkdown?: string;
 }
 
 /** ⑫ GET /health 응답 */

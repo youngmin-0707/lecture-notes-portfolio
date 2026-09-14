@@ -18,6 +18,7 @@ import type {
   SummarizeSessionResponse,
   TranscriptResponse,
   UpdateSessionRequest,
+  UpdateSummaryRequest,
 } from "./types.ts";
 
 /** ① POST /api/v1/sessions — 오디오 업로드 → 세션 생성 */
@@ -235,4 +236,24 @@ export async function updateSession(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+}
+
+/**
+ * PATCH /api/v1/sessions/{id}/summary — 요약 내용 직접 수정 (2026-09-14).
+ *
+ * 요약이 마음에 들지 않을 때 재요약(LLM 재호출, `resummarizeSession`)을 기다리지 않고
+ * 즉시 고칠 수 있다.
+ */
+export async function updateSummary(
+  sessionId: string,
+  body: UpdateSummaryRequest,
+): Promise<SessionDetailResponse> {
+  return requestJson<SessionDetailResponse>(
+    `/sessions/${encodeURIComponent(sessionId)}/summary`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
 }

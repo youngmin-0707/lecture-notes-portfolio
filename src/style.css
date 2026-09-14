@@ -466,6 +466,13 @@ body {
   margin-bottom: 0.4rem;
 }
 
+/* 타임스탬프가 없는 전사(텍스트 파일 업로드)의 본문 — 줄바꿈을 그대로 살려 보여준다. */
+.transcript-plain {
+  margin: 0;
+  white-space: pre-wrap;
+  line-height: 1.7;
+}
+
 .key-point-list,
 .segment-list {
   list-style: none;
@@ -654,6 +661,100 @@ body {
 
 #meta-edit-course {
   flex: 1 1 120px;
+}
+
+/* --- 2026-09-14: 요약 내용 직접 수정 --- */
+
+.summary-content__toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 0.5rem;
+}
+
+.summary-edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.summary-edit-form label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #555;
+}
+
+.summary-edit-form input,
+.summary-edit-form textarea {
+  padding: 0.5rem 0.6rem;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: 0.95rem;
+  font-family: inherit;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.summary-edit-form textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+
+/* 본문 입력 칸 + 실시간 미리보기를 나란히 둔다 — 마크다운 원문을 치는 동안 실제로 어떻게
+   보일지 바로 옆에서 확인할 수 있게 한다(2026-09-14). 좁은 화면에서는 위아래로 쌓는다. */
+.summary-edit-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+}
+
+.summary-edit-split textarea {
+  height: 100%;
+  min-height: 20rem;
+}
+
+.summary-edit-preview {
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 0.6rem 0.8rem;
+  min-height: 20rem;
+  max-height: 32rem;
+  overflow-y: auto;
+  background: #fafafa;
+}
+
+@media (max-width: 700px) {
+  .summary-edit-split {
+    grid-template-columns: 1fr;
+  }
+}
+
+.summary-edit-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+
+/* --- 2026-09-14: 세션 삭제 --- */
+
+.danger-zone {
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 1px solid #e0e0e0;
+}
+
+.btn--delete {
+  background: #fff;
+  color: #b3261e;
+  border: 1px solid #b3261e;
+}
+
+.btn--delete:hover {
+  background: #fdeaea;
+}
+
+.btn--delete:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 /* --- T-34: 검색 + 용어집 --- */

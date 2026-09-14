@@ -15,8 +15,13 @@ import { renderShell } from "./shell.ts";
 
 // §3.1 업로드 검증 규칙과 동일한 허용 형식/용량. 서버가 매직 넘버로 최종 판정하므로
 // 이건 어디까지나 "업로드 전에 걸러서 UX를 개선"하는 1차 필터일 뿐이다.
-const ALLOWED_EXTENSIONS = ["mp3", "m4a", "wav", "webm", "ogg", "flac", "mp4", "mpeg"];
+const ALLOWED_AUDIO_EXTENSIONS = ["mp3", "m4a", "wav", "webm", "ogg", "flac", "mp4", "mpeg"];
+// 2026-09-14: 이미 텍스트로 정리된 자료도 올릴 수 있다. 전사할 것이 없으므로 서버가 업로드
+// 내용을 그대로 전사로 저장하고 곧바로 요약을 시작한다(status가 SUMMARIZING으로 돌아온다).
+const ALLOWED_TEXT_EXTENSIONS = ["txt", "md", "markdown"];
 const MAX_UPLOAD_SIZE_BYTES = 500 * 1024 * 1024;
+// 텍스트는 오디오와 달리 수백 MB일 이유가 없다 (백엔드 MAX_TEXT_UPLOAD_SIZE_BYTES와 맞춘다).
+const MAX_TEXT_UPLOAD_SIZE_BYTES = 5 * 1024 * 1024;
 
 const POLL_INTERVAL_MS = 5000;
 
@@ -62,7 +67,7 @@ function formatElapsed(ms: number): string {
 
 // MediaRecorder가 실제로 사용한 mimeType에서 업로드 파일 확장자를 정한다 — 백엔드는
 // 매직 넘버로 최종 검증하지만(§3.1), 클라이언트 1차 필터(validateFileClientSide)를 통과하려면
-// 파일명 확장자가 §3.1 허용 목록에 든 것이어야 한다.
+// 파일명 확장자가 §3.1 허용 목록(ALLOWED_AUDIO_EXTENSIONS)에 든 것이어야 한다.
 function extensionFromMimeType(mimeType: string): string {
   if (mimeType.includes("mp4")) return "mp4";
   if (mimeType.includes("ogg")) return "ogg";
@@ -70,14 +75,24 @@ function extensionFromMimeType(mimeType: string): string {
   return "webm"; // 대부분의 브라우저(Chrome/Firefox) 기본값.
 }
 
+function fileExtension(file: File): string {
+  return file.name.includes(".") ? (file.name.split(".").pop() ?? "").toLowerCase() : "";
+}
+
 function validateFileClientSide(file: File): string | null {
-  const ext = file.name.includes(".") ? (file.name.split(".").pop() ?? "").toLowerCase() : "";
-  if (!ALLOWED_EXTENSIONS.includes(ext)) {
-    return `지원하지 않는 파일 형식입니다${ext ? ` (.${ext})` : ""}. 지원 형식: ${ALLOWED_EXTENSIONS.join(", ")}`;
+  const ext = fileExtension(file);
+  const isText = ALLOWED_TEXT_EXTENSIONS.includes(ext);
+  if (!isText && !ALLOWED_AUDIO_EXTENSIONS.includes(ext)) {
+    return `지원하지 않는 파일 형식입니다${ext ? ` (.${ext})` : ""}. 지원 형식: ${[
+      ...ALLOWED_AUDIO_EXTENSIONS,
+      ...ALLOWED_TEXT_EXTENSIONS,
+    ].join(", ")}`;
   }
-  if (file.size > MAX_UPLOAD_SIZE_BYTES) {
+  const maxBytes = isText ? MAX_TEXT_UPLOAD_SIZE_BYTES : MAX_UPLOAD_SIZE_BYTES;
+  if (file.size > maxBytes) {
     const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
-    return `파일 크기가 최대 500MB를 초과합니다 (현재 ${sizeMb}MB).`;
+    const limitMb = Math.round(maxBytes / (1024 * 1024));
+    return `${isText ? "텍스트 파일" : "파일"} 크기가 최대 ${limitMb}MB를 초과합니다 (현재 ${sizeMb}MB).`;
   }
   return null;
 }
@@ -297,8 +312,10 @@ async function handleFile(file: File, generation: number): Promise<void> {
       updateUploadProgress(progress);
     });
     if (generation !== currentGeneration) return;
+    const startedMessage =
+      result.status === "SUMMARIZING" ? "요약을 시작했습니다" : "처리를 시작했습니다";
     setUploadStatus(
-      `<p class="status status--ok">업로드 완료: ${escapeHtml(result.title)} (처리를 시작했습니다)</p>`,
+      `<p class="status status--ok">업로드 완료: ${escapeHtml(result.title)} (${startedMessage})</p>`,
     );
     const items = await refreshSessions(generation);
     maybeStartPolling(generation, items);
@@ -600,11 +617,19 @@ export function renderHomePage(): void {
     "home",
     `
       <section>
-        <h1>강의 녹음 업로드</h1>
+        <h1>강의 업로드</h1>
         <div id="dropzone" class="dropzone" role="button" tabindex="0">
-          <p>오디오 파일을 여기로 드래그하거나 클릭해서 선택하세요</p>
-          <p class="dropzone__hint">지원 형식: ${ALLOWED_EXTENSIONS.join(", ")} · 최대 500MB</p>
-          <input type="file" id="file-input" accept="audio/*" hidden />
+          <p>오디오 또는 텍스트 파일을 여기로 드래그하거나 클릭해서 선택하세요</p>
+          <p class="dropzone__hint">
+            오디오: ${ALLOWED_AUDIO_EXTENSIONS.join(", ")} · 최대 500MB<br />
+            텍스트: ${ALLOWED_TEXT_EXTENSIONS.join(", ")} · 최대 5MB (전사 없이 바로 요약)
+          </p>
+          <input
+            type="file"
+            id="file-input"
+            accept="audio/*,text/plain,text/markdown,.txt,.md,.markdown"
+            hidden
+          />
         </div>
         <div id="upload-status"></div>
         <div class="recorder">

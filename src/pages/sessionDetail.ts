@@ -1,12 +1,14 @@
 // 세션 상세 화면 (T-33, US-21): 요약/전사 탭 + 오디오 재생·탐색 + 다운로드.
 import {
   createQuiz,
+  deleteSession,
   exportSession,
   getQuiz,
   getSession,
   getSessionAudioUrl,
   getTranscript,
   updateSession,
+  updateSummary,
   type ExportFormat,
   type QuizResponse,
   type SessionDetailResponse,
@@ -14,7 +16,7 @@ import {
   type TranscriptResponse,
 } from "../api/index.ts";
 import { getUserErrorMessage } from "../errors/errorMessages.ts";
-import type { RouteParams } from "../router/router.ts";
+import { navigate, type RouteParams } from "../router/router.ts";
 import { el, escapeHtml } from "../utils/dom.ts";
 import { formatDate, formatDuration, formatTimestamp } from "../utils/format.ts";
 import { renderMarkdown } from "../utils/markdown.ts";
@@ -31,6 +33,12 @@ let currentGeneration = 0;
 let activeTab: Tab = "summary";
 let cachedTranscript: TranscriptResponse | null = null;
 let isEditingMeta = false;
+
+// 요약 내용 수정(2026-09-14) 상태. 메타(제목/과목) 편집과 같은 패턴 — 편집 모드 토글은
+// 세션 재조회 없이 로컬 상태만 바꾸고, 저장 성공 시 응답으로 받은 최신 세션으로 다시 그린다.
+let isEditingSummary = false;
+// 세션 삭제(2026-09-14) 진행 중 — 중복 클릭으로 DELETE를 두 번 보내는 것을 막는다.
+let isDeletingSession = false;
 
 // 복습 탭(2026-09-01 신규) 상태. `cachedQuiz`가 `null`인 것과 "아직 조회 안 함"을
 // 구분해야 해서(전자는 "생성 버튼을 보여줄 시점", 후자는 "일단 조회부터") `quizFetched`를
@@ -113,21 +121,87 @@ function renderLegacySections(summary: SessionSummaryDetail): string {
   `;
 }
 
-function renderSummaryTab(summary: SessionSummaryDetail | null): string {
+/**
+ * 요약 수정 폼(2026-09-14). 메타(제목/과목) 편집(`renderTitleAndMeta`)과 같은 패턴 —
+ * "핵심 주제"(keyPoints)는 타임스탬프와 묶여 있어 이 폼으로는 건드리지 않는다(백엔드
+ * `PATCH .../summary`도 그 둘만 받는다).
+ */
+/**
+ * 본문 textarea 옆에 실제 렌더링된 모습을 실시간으로 보여주는 미리보기 패널(2026-09-14).
+ * 완전한 인라인(WYSIWYG) 편집 대신 이 방식을 택한 이유: 저장되는 값은 항상 순수 마크다운
+ * 문자열(`detailedNotesMarkdown`)이고 내보내기(MD/TXT)·`content_markdown` 재조립도 그
+ * 마크다운을 그대로 쓴다 — contenteditable로 렌더링된 HTML을 직접 고치게 하면 저장할 때
+ * 다시 마크다운으로 역변환해야 하는데, 그 과정에서 제목·목록 구조가 꼬이거나 손상될 위험이
+ * 있다. 기존에 검증된 `renderMarkdown()`을 입력할 때마다 그대로 재사용해 "타이핑하는
+ * 그대로 어떻게 보일지"를 안전하게 보여준다.
+ */
+function updateSummaryEditPreview(): void {
+  const notesInput = el<"textarea">("summary-edit-notes");
+  const preview = el<"div">("summary-edit-preview");
+  if (!notesInput || !preview) return;
+  const text = notesInput.value.trim();
+  preview.innerHTML = text
+    ? renderMarkdown(text)
+    : `<p class="empty-state">본문을 입력하면 여기에 미리보기가 보입니다.</p>`;
+}
+
+function renderSummaryEditForm(summary: SessionSummaryDetail): string {
+  const detailedNotes = summary.detailedNotesMarkdown ?? "";
+  return `
+    <form id="summary-edit-form" class="summary-edit-form">
+      <label for="summary-edit-one-line">한 줄 요약</label>
+      <input
+        type="text"
+        id="summary-edit-one-line"
+        value="${escapeHtml(extractOneLineSummary(summary.contentMarkdown))}"
+        maxlength="500"
+      />
+      <label for="summary-edit-notes">본문</label>
+      <div class="summary-edit-split">
+        <textarea id="summary-edit-notes" rows="18">${escapeHtml(detailedNotes)}</textarea>
+        <div id="summary-edit-preview" class="notes-body summary-edit-preview">
+          ${detailedNotes.trim() ? renderMarkdown(detailedNotes) : `<p class="empty-state">본문을 입력하면 여기에 미리보기가 보입니다.</p>`}
+        </div>
+      </div>
+      <div id="summary-edit-status"></div>
+      <div class="summary-edit-actions">
+        <button type="submit" class="btn btn--export">저장</button>
+        <button type="button" id="summary-edit-cancel" class="btn btn--export">취소</button>
+      </div>
+    </form>
+  `;
+}
+
+function renderSummaryTab(session: SessionDetailResponse): string {
+  const summary = session.summary;
   if (!summary) {
     return `<p class="empty-state">아직 요약이 없습니다.</p>`;
   }
 
+  if (isEditingSummary) {
+    return renderSummaryEditForm(summary);
+  }
+
+  const editButtonHtml = PROCESSING_STATUSES.includes(session.status)
+    ? ""
+    : `<button type="button" id="summary-edit-start" class="edit-icon-btn" aria-label="요약 내용 수정">✎ 수정</button>`;
+
   const keyPointsHtml = summary.keyPoints.length
     ? `<ul class="key-point-list">${summary.keyPoints
-        .map(
-          (kp) => `
+        .map((kp) => {
+          // 텍스트 파일로 만든 세션에는 시간축이 없어 atSeconds가 null이다 — 이동할 지점이
+          // 없으므로 "[00:00]" 버튼 대신 항목만 보여준다 (2026-09-14).
+          const jumpButton =
+            kp.atSeconds === null
+              ? ""
+              : `<button type="button" class="timestamp-link" data-jump="${kp.atSeconds}">[${formatTimestamp(kp.atSeconds)}]</button>`;
+          return `
             <li>
-              <button type="button" class="timestamp-link" data-jump="${kp.atSeconds}">[${formatTimestamp(kp.atSeconds)}]</button>
+              ${jumpButton}
               ${escapeHtml(kp.text)}
             </li>
-          `,
-        )
+          `;
+        })
         .join("")}</ul>`
     : `<p>없음</p>`;
 
@@ -158,6 +232,7 @@ function renderSummaryTab(summary: SessionSummaryDetail | null): string {
 
   return `
     <div class="summary-content">
+      <div class="summary-content__toolbar">${editButtonHtml}</div>
       <section class="summary-section">
         <h3>한 줄 요약</h3>
         <p>${escapeHtml(extractOneLineSummary(summary.contentMarkdown))}</p>
@@ -177,6 +252,11 @@ function renderTranscriptTab(transcript: TranscriptResponse | null): string {
     return `<p class="empty-state">아직 전사가 없습니다.</p>`;
   }
   if (transcript.segments.length === 0) {
+    // 타임스탬프가 없는 전사(텍스트 파일 업로드, 2026-09-14)는 본문을 그대로 보여준다 —
+    // 세그먼트가 없다는 이유로 내용 전체를 숨기면 텍스트 세션에서는 볼 게 아무것도 없다.
+    if (transcript.text.trim()) {
+      return `<p class="transcript-plain">${escapeHtml(transcript.text)}</p>`;
+    }
     return `<p class="empty-state">전사 세그먼트가 없습니다.</p>`;
   }
   return `
@@ -261,7 +341,7 @@ function renderTabContent(session: SessionDetailResponse): void {
   const target = el("tab-content");
   if (!target) return;
   if (activeTab === "summary") {
-    target.innerHTML = renderSummaryTab(session.summary);
+    target.innerHTML = renderSummaryTab(session);
   } else if (activeTab === "transcript") {
     target.innerHTML = renderTranscriptTab(cachedTranscript);
   } else {
@@ -366,6 +446,23 @@ function wireInteractions(sessionId: string, generation: number): void {
     if (target.closest("#meta-edit-cancel")) {
       isEditingMeta = false;
       if (lastRenderedSession) rerenderMetaArea(lastRenderedSession);
+      return;
+    }
+
+    if (target.closest("#summary-edit-start")) {
+      isEditingSummary = true;
+      if (lastRenderedSession) renderTabContent(lastRenderedSession);
+      return;
+    }
+
+    if (target.closest("#summary-edit-cancel")) {
+      isEditingSummary = false;
+      if (lastRenderedSession) renderTabContent(lastRenderedSession);
+      return;
+    }
+
+    if (target.closest("#session-delete-button")) {
+      void handleDeleteSession(sessionId, generation);
     }
   });
 
@@ -374,6 +471,17 @@ function wireInteractions(sessionId: string, generation: number): void {
     if (form.id === "meta-edit-form") {
       event.preventDefault();
       void handleMetaEditSubmit(sessionId, generation);
+    }
+    if (form.id === "summary-edit-form") {
+      event.preventDefault();
+      void handleSummaryEditSubmit(sessionId, generation);
+    }
+  });
+
+  // 본문 textarea에 입력할 때마다 옆 미리보기를 즉시 갱신한다 (2026-09-14).
+  container.addEventListener("input", (event) => {
+    if ((event.target as HTMLElement).id === "summary-edit-notes") {
+      updateSummaryEditPreview();
     }
   });
 }
@@ -409,6 +517,76 @@ function setMetaEditStatus(html: string): void {
 function rerenderMetaArea(session: SessionDetailResponse): void {
   const target = el("session-meta-area");
   if (target) target.innerHTML = renderTitleAndMeta(session);
+}
+
+async function handleSummaryEditSubmit(sessionId: string, generation: number): Promise<void> {
+  const oneLineInput = el<"input">("summary-edit-one-line");
+  const notesInput = el<"textarea">("summary-edit-notes");
+  const oneLineSummary = oneLineInput?.value.trim() ?? "";
+  const detailedNotesMarkdown = notesInput?.value.trim() ?? "";
+
+  if (!oneLineSummary || !detailedNotesMarkdown) {
+    setSummaryEditStatus(
+      `<p class="status status--error">한 줄 요약과 본문은 비워둘 수 없습니다.</p>`,
+    );
+    return;
+  }
+
+  try {
+    const updated = await updateSummary(sessionId, { oneLineSummary, detailedNotesMarkdown });
+    if (generation !== currentGeneration) return;
+    lastRenderedSession = updated;
+    isEditingSummary = false;
+    renderTabContent(updated);
+  } catch (error) {
+    if (generation !== currentGeneration) return;
+    setSummaryEditStatus(`<p class="status status--error">${getUserErrorMessage(error)}</p>`);
+  }
+}
+
+function setSummaryEditStatus(html: string): void {
+  const target = el("summary-edit-status");
+  if (target) target.innerHTML = html;
+}
+
+/**
+ * 세션 삭제(2026-09-14, US-18 백엔드 `DELETE /sessions/{id}`를 화면에 연결). 오디오·전사·
+ * 요약·복습 문제가 모두 함께 지워지는 되돌릴 수 없는 동작이라 네이티브 confirm으로 한 번 더
+ * 확인한다. 성공하면 더 이상 존재하지 않는 세션 상세 화면에 머물 수 없으므로 홈으로 이동한다.
+ */
+async function handleDeleteSession(sessionId: string, generation: number): Promise<void> {
+  if (isDeletingSession) return;
+  const confirmed = window.confirm(
+    "정말 이 세션을 삭제하시겠습니까?\n오디오·전사·요약·복습 문제가 모두 함께 삭제되며 되돌릴 수 없습니다.",
+  );
+  if (!confirmed) return;
+
+  isDeletingSession = true;
+  const button = el<"button">("session-delete-button");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "삭제하는 중...";
+  }
+  setDeleteStatus("");
+
+  try {
+    await deleteSession(sessionId);
+    if (generation !== currentGeneration) return;
+    navigate("#/");
+  } catch (error) {
+    if (generation !== currentGeneration) return;
+    isDeletingSession = false;
+    if (button) {
+      button.disabled = false;
+      button.textContent = "세션 삭제";
+    }
+    setDeleteStatus(`<p class="status status--error">${getUserErrorMessage(error)}</p>`);
+  }
+}
+
+function setDeleteStatus(html: string): void {
+  const target = el("session-delete-status");
+  if (target) target.innerHTML = html;
 }
 
 let lastRenderedSession: SessionDetailResponse | null = null;
@@ -519,10 +697,13 @@ function renderTitleAndMeta(session: SessionDetailResponse): string {
 }
 
 function renderSessionShell(session: SessionDetailResponse): string {
-  // 요약까지 끝나면 원본 오디오를 지우므로(2026-08-29), 없을 땐 빈 플레이어 대신 안내만 보여준다.
+  // 요약까지 끝나면 원본 오디오를 지우므로(2026-08-29), 없을 땐 빈 플레이어 대신 안내만
+  // 보여준다. 텍스트 파일로 만든 세션(2026-09-14)은 애초에 오디오가 없으니 이유도 다르게 쓴다.
   const audioSection = session.audioAvailable
     ? `<audio id="audio-player" controls preload="none" src="${getSessionAudioUrl(session.sessionId)}"></audio>`
-    : `<p class="audio-unavailable-notice">오디오 원본은 요약 완료 후 자동으로 삭제됩니다. 아래 텍스트로 확인해주세요.</p>`;
+    : session.source === "TEXT"
+      ? `<p class="audio-unavailable-notice">텍스트 파일로 등록한 세션이라 오디오가 없습니다.</p>`
+      : `<p class="audio-unavailable-notice">오디오 원본은 요약 완료 후 자동으로 삭제됩니다. 아래 텍스트로 확인해주세요.</p>`;
 
   const processingNotice = PROCESSING_STATUSES.includes(session.status)
     ? `<p class="status status--loading">처리 중입니다... 자동으로 갱신됩니다.</p>`
@@ -550,11 +731,29 @@ function renderSessionShell(session: SessionDetailResponse): string {
     <div class="export-buttons">
       <button type="button" class="btn btn--export" data-export="md">MD 다운로드</button>
       <button type="button" class="btn btn--export" data-export="txt">TXT 다운로드</button>
-      <button type="button" class="btn btn--export" data-export="srt">SRT 다운로드</button>
+      ${
+        // SRT는 세그먼트 자막 포맷이라 시간축이 없는 텍스트 세션에서는 빈 파일이 나온다
+        // — 받을 수 있는 것처럼 보여주지 않는다 (2026-09-14).
+        session.source === "TEXT"
+          ? ""
+          : `<button type="button" class="btn btn--export" data-export="srt">SRT 다운로드</button>`
+      }
     </div>
     <div id="export-status"></div>
 
     <div id="tab-content"></div>
+
+    <div class="danger-zone">
+      <button
+        type="button"
+        id="session-delete-button"
+        class="btn btn--delete"
+        ${PROCESSING_STATUSES.includes(session.status) ? "disabled" : ""}
+      >
+        세션 삭제
+      </button>
+      <div id="session-delete-status"></div>
+    </div>
   `;
 }
 
@@ -606,6 +805,8 @@ export function renderSessionDetailPage(params: RouteParams): void {
   cachedTranscript = null;
   lastRenderedSession = null;
   isEditingMeta = false;
+  isEditingSummary = false;
+  isDeletingSession = false;
   cachedQuiz = null;
   quizFetched = false;
   isCreatingQuiz = false;
