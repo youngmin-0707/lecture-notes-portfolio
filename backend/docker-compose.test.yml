@@ -1,0 +1,22 @@
+# 테스트 전용 PostgreSQL. 앱 개발용 DB(compose 등)는 backend-implementer가 A-3에서 별도로 구성한다.
+#
+# 사용법:
+#   docker compose -f docker-compose.test.yml up -d
+#   TEST_DATABASE_URL=postgresql+psycopg2://postgres:postgres@localhost:5433/signup_test pytest
+#
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: signup_test
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+    tmpfs:
+      - /var/lib/postgresql/data

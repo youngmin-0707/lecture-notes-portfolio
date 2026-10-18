@@ -1,0 +1,130 @@
+"""127.0.0.1 바인딩 강제 + CORS 제한 테스트 (T-06, §3.7, US-11).
+
+- BIND_HOST=0.0.0.0이면 `app.main`을 import하는 시점에 기동을 거부해야 한다.
+  이는 프로세스 전역 상태(모듈 캐시)에 영향을 주므로 격리된 서브프로세스로 검증한다.
+- CORS는 http://127.0.0.1:*, http://localhost:*만 허용해야 한다.
+"""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+BACKEND_DIR = Path(__file__).resolve().parent.parent
+
+
+def _run_import_app_main(env_overrides: dict[str, str]) -> subprocess.CompletedProcess:
+    import os
+
+    env = {**os.environ, **env_overrides}
+    return subprocess.run(
+        [sys.executable, "-c", "import app.main"],
+        cwd=str(BACKEND_DIR),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def test_bind_host_0000_rejects_app_startup() -> None:
+    result = _run_import_app_main({"BIND_HOST": "0.0.0.0"})
+
+    assert result.returncode != 0
+    assert "0.0.0.0" in (result.stdout + result.stderr)
+
+
+def test_bind_host_default_127_0_0_1_starts_successfully() -> None:
+    result = _run_import_app_main({})
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_bind_host_explicit_127_0_0_1_starts_successfully() -> None:
+    result = _run_import_app_main({"BIND_HOST": "127.0.0.1"})
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_cors_allows_127_0_0_1_origin() -> None:
+    from app.main import app
+
+    with TestClient(app) as client:
+        response = client.get("/health", headers={"Origin": "http://127.0.0.1:5500"})
+
+    assert response.headers.get("access-control-allow-origin") == "http://127.0.0.1:5500"
+
+
+def test_cors_allows_localhost_origin_with_port() -> None:
+    from app.main import app
+
+    with TestClient(app) as client:
+        response = client.get("/health", headers={"Origin": "http://localhost:3000"})
+
+    assert response.headers.get("access-control-allow-origin") == "http://localhost:3000"
+
+
+def test_cors_blocks_other_origins() -> None:
+    from app.main import app
+
+    with TestClient(app) as client:
+        response = client.get("/health", headers={"Origin": "http://evil.example.com"})
+
+    assert "access-control-allow-origin" not in response.headers
+
+
+class TestBuildAllowedOriginRegex:
+    """2026-08-29: Tailscale 원격 접속용 CORS 확장. 순수 함수라 앱 import 없이 검증 가능."""
+
+    def test_tailscale_origin_rejected_by_default(self) -> None:
+        import re
+
+        from app.main import build_allowed_origin_regex
+
+        pattern = build_allowed_origin_regex(allow_tailscale_origins=False)
+        assert re.match(pattern, "https://macbookpro.example.ts.net") is None
+
+    def test_tailscale_origin_allowed_when_enabled(self) -> None:
+        import re
+
+        from app.main import build_allowed_origin_regex
+
+        pattern = build_allowed_origin_regex(allow_tailscale_origins=True)
+        assert re.match(pattern, "https://macbookpro.example.ts.net") is not None
+        assert re.match(pattern, "https://macbookpro.example.ts.net:443") is not None
+
+    def test_non_ts_net_https_origin_still_rejected_when_enabled(self) -> None:
+        import re
+
+        from app.main import build_allowed_origin_regex
+
+        pattern = build_allowed_origin_regex(allow_tailscale_origins=True)
+        assert re.match(pattern, "https://evil.example.com") is None
+
+    def test_localhost_still_allowed_when_tailscale_enabled(self) -> None:
+        import re
+
+        from app.main import build_allowed_origin_regex
+
+        pattern = build_allowed_origin_regex(allow_tailscale_origins=True)
+        assert re.match(pattern, "http://127.0.0.1:5173") is not None
+
+
+def test_cors_exposes_content_disposition_header() -> None:
+    """T-33: 브라우저는 기본적으로 응답 헤더 중 "안전 목록"만 JS에서 읽을 수 있다.
+
+    `expose_headers`에 명시하지 않으면 cross-origin fetch에서
+    `response.headers.get("Content-Disposition")`이 항상 null이 된다 — 프론트 내보내기
+    다운로드의 실제 파일명을 못 읽는 버그로 실측됐다(T-33 커밋 참고).
+    """
+    from app.main import app
+
+    with TestClient(app) as client:
+        response = client.get("/health", headers={"Origin": "http://127.0.0.1:5500"})
+
+    exposed = response.headers.get("access-control-expose-headers", "")
+    assert "Content-Disposition" in exposed
+    assert "X-Request-Id" in exposed

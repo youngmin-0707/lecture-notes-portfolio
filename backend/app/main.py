@@ -1,0 +1,123 @@
+"""FastAPI 애플리케이션 엔트리포인트."""
+
+from __future__ import annotations
+
+import logging
+import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.api.v1.glossary import router as glossary_router
+from app.api.v1.health import router as health_router
+from app.api.v1.search import router as search_router
+from app.api.v1.sessions import router as sessions_router
+from app.core.config import settings
+from app.core.errors import register_exception_handlers
+from app.db.session import SessionLocal
+from app.pipeline.recovery import sweep_interrupted_quizzes, sweep_interrupted_sessions
+
+logger = logging.getLogger("app.main")
+
+
+# 개인용 로컬 도구다 — 인증이 없으므로 127.0.0.1 바인딩이 유일한 방어선이다 (§3.7, §6, US-11).
+# `uvicorn app.main:app --host 0.0.0.0`처럼 어떤 방식으로 기동하더라도 이 모듈을 import하는
+# 순간 검증되므로 우회할 수 없다.
+def validate_bind_host(host: str) -> None:
+    if host == "0.0.0.0":  # noqa: S104
+        raise SystemExit(
+            "BIND_HOST=0.0.0.0는 허용되지 않습니다. 이 도구는 인증이 없는 개인용 로컬 앱이므로 "
+            "반드시 127.0.0.1(로컬호스트)에만 바인딩해야 합니다. 같은 네트워크의 다른 사용자가 "
+            "강의 녹음·전사에 접근할 수 있게 되는 것을 막기 위한 안전장치입니다."
+        )
+
+
+validate_bind_host(settings.BIND_HOST)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """서버 기동 시 비정상 종료 복구 스윕을 1회 실행한다 (T-20, §3.6, US-10).
+
+    `BackgroundTasks`는 서버가 재시작되면 진행 중이던 작업을 그대로 잃는다. `TRANSCRIBING`/
+    `SUMMARIZING` 상태로 남아있는 세션을 전부 `FAILED(error_code="INTERRUPTED")`로 전이시켜,
+    사용자가 재실행할 수 있는 상태로 되돌린다.
+    """
+    db = SessionLocal()
+    try:
+        swept_ids = sweep_interrupted_sessions(db)
+        swept_quiz_ids = sweep_interrupted_quizzes(db)
+        db.commit()
+        if swept_ids:
+            logger.warning(
+                "startup recovery sweep: %d session(s) marked FAILED(INTERRUPTED): %s",
+                len(swept_ids),
+                swept_ids,
+            )
+        if swept_quiz_ids:
+            logger.warning(
+                "startup recovery sweep: %d quiz(zes) marked FAILED(INTERRUPTED): %s",
+                len(swept_quiz_ids),
+                swept_quiz_ids,
+            )
+    except Exception:
+        db.rollback()
+        logger.exception("startup recovery sweep failed")
+    finally:
+        db.close()
+
+    yield
+
+
+app = FastAPI(title="API", version="1.0.0", lifespan=lifespan)
+
+
+def build_allowed_origin_regex(*, allow_tailscale_origins: bool) -> str:
+    """CORS `allow_origin_regex` 패턴 문자열을 만든다.
+
+    http://127.0.0.1:*, http://localhost:* 는 항상 허용한다 (§3.7). `allow_tailscale_origins`가
+    켜지면 자기 tailnet 서브도메인(https://*.ts.net)도 추가로 허용한다 — `tailscale serve`로
+    원격(예: 회사 데스크탑)에서 접속할 때 필요하다. 이 도메인은 Tailscale이 계정별 tailnet
+    단위로만 발급하므로(타인이 임의로 리졸브를 바꿀 수 없음) 신뢰 가능하다. 순수 함수라 앱을
+    import하지 않고도 단위 테스트할 수 있다.
+    """
+    patterns = [r"http://(127\.0\.0\.1|localhost)(:\d+)?"]
+    if allow_tailscale_origins:
+        patterns.append(r"https://[a-zA-Z0-9.-]+\.ts\.net(:\d+)?")
+    return r"^(?:" + "|".join(patterns) + r")$"
+
+
+_ALLOWED_ORIGIN_REGEX = build_allowed_origin_regex(
+    allow_tailscale_origins=settings.ALLOW_TAILSCALE_ORIGINS
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=_ALLOWED_ORIGIN_REGEX,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    # 브라우저는 기본적으로 "안전 목록"에 없는 응답 헤더를 JS에서 못 읽는다 — 이 둘을
+    # 명시적으로 노출하지 않으면 cross-origin(프론트 5173 → 백엔드 8765) fetch에서
+    # response.headers.get("Content-Disposition")이 항상 null이 된다. T-33에서 프론트
+    # 내보내기 다운로드 파일명이 계속 "download"로 나오는 걸 실제로 겪고서야 발견했다.
+    expose_headers=["Content-Disposition", "X-Request-Id"],
+)
+
+
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    """모든 응답에 requestId를 부여한다 (요구사항 §5.1, §6 관측성)."""
+    request.state.request_id = str(uuid.uuid4())
+    response = await call_next(request)
+    response.headers["X-Request-Id"] = request.state.request_id
+    return response
+
+
+register_exception_handlers(app)
+
+app.include_router(sessions_router, prefix="/api/v1")
+app.include_router(glossary_router, prefix="/api/v1")
+app.include_router(search_router, prefix="/api/v1")
+app.include_router(health_router)
