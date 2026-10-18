@@ -11,7 +11,9 @@
 
 from __future__ import annotations
 
+import io
 import math
+import zipfile
 from datetime import UTC, date, datetime, time
 from pathlib import Path
 from typing import Annotated, Literal
@@ -54,6 +56,7 @@ from app.schemas.quiz import (
     QuizTriggerResponse,
 )
 from app.schemas.session import (
+    BulkExportRequest,
     ProcessRequest,
     ProcessResponse,
     ProgressResponse,
@@ -508,6 +511,8 @@ def update_session_metadata(
         session.title_customized = True
     if body.course is not None:
         session.course = body.course
+    if body.recorded_at is not None:
+        session.recorded_at = body.recorded_at.astimezone(UTC)
     db.flush()
     return _build_session_detail_response(db, session)
 
@@ -860,6 +865,70 @@ def export_session(
         content=content,
         media_type=EXPORT_MEDIA_TYPES[format],
         headers={"Content-Disposition": build_content_disposition(filename)},
+    )
+
+
+def _unique_archive_name(filename: str, used: set[str]) -> str:
+    """ZIP 안에서 같은 이름이 겹치면 `이름 (2).md`처럼 번호를 붙인다 — 같은 날 같은 제목의
+    세션(업로드 기본 제목 "YYYY-MM-DD 수업" 등)이 서로를 덮어쓰지 않게 한다."""
+    stem, dot, extension = filename.rpartition(".")
+    candidate = filename
+    counter = 2
+    while candidate in used:
+        candidate = f"{stem} ({counter}){dot}{extension}"
+        counter += 1
+    used.add(candidate)
+    return candidate
+
+
+@router.post("/sessions/export")
+def export_sessions_zip(
+    body: BulkExportRequest,
+    db: Annotated[DBSession, Depends(get_db, scope="function")],
+) -> Response:
+    """여러 세션의 요약을 세션별 `.md`로 묶은 ZIP 하나로 내려준다 (2026-10-07).
+
+    단건 내보내기(⑦)의 `md`와 달리 전사 전문은 넣지 않는다 — 요약만 모아 보려는 용도다.
+    하나라도 없는 세션/요약이 없는 세션이 섞여 있으면 일부만 담긴 ZIP을 주지 않고 통째로
+    실패시킨다(받은 사람이 빠진 파일을 알아채기 어렵다).
+    """
+    session_ids = list(dict.fromkeys(body.session_ids))
+    buffer = io.BytesIO()
+    used_names: set[str] = set()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for session_id in session_ids:
+            session = _get_session_or_404(db, session_id)
+            latest_summary = db.execute(
+                select(Summary)
+                .where(Summary.session_id == session.id)
+                .order_by(Summary.created_at.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            if latest_summary is None:
+                raise AppError("SUMMARY_NOT_READY")
+
+            filename = build_export_filename(
+                recorded_at=session.recorded_at,
+                course=session.course,
+                title=session.title,
+                extension="md",
+            )
+            archive.writestr(
+                _unique_archive_name(filename, used_names),
+                render_markdown_export(
+                    title=session.title,
+                    course=session.course,
+                    recorded_at=session.recorded_at,
+                    transcript=None,
+                    summary=latest_summary,
+                ),
+            )
+
+    zip_filename = f"lecture-notes_{datetime.now(UTC):%Y-%m-%d}_{len(session_ids)}건.zip"
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": build_content_disposition(zip_filename)},
     )
 
 

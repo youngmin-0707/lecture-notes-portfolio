@@ -166,3 +166,69 @@ class TestUpdateSessionValidation:
 
         assert response.status_code == 400, response.text
         assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+class TestUpdateRecordedAt:
+    """2026-10-07: 세션을 다른 일자로 옮긴다 — 업로드일과 실제 수업일이 다를 때 바로잡는 용도."""
+
+    def test_updates_recorded_at(self, client, db_session) -> None:
+        session = _make_session(recorded_at=datetime(2026, 10, 7, 1, 25, 5, tzinfo=UTC))
+        db_session.add(session)
+        db_session.flush()
+
+        response = client.patch(
+            f"/api/v1/sessions/{session.id}", json={"recordedAt": "2026-10-01T01:25:05Z"}
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["recordedAt"] == "2026-10-01T01:25:05Z"
+
+    def test_offset_datetime_is_normalized_to_utc(self, client, db_session) -> None:
+        session = _make_session()
+        db_session.add(session)
+        db_session.flush()
+
+        response = client.patch(
+            f"/api/v1/sessions/{session.id}", json={"recordedAt": "2026-10-01T08:00:00+09:00"}
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["recordedAt"] == "2026-09-30T23:00:00Z"
+
+    def test_moved_session_is_found_by_new_date_filter(self, client, db_session) -> None:
+        session = _make_session(recorded_at=datetime(2026, 10, 7, 1, 25, 5, tzinfo=UTC))
+        db_session.add(session)
+        db_session.flush()
+
+        client.patch(f"/api/v1/sessions/{session.id}", json={"recordedAt": "2026-10-01T01:25:05Z"})
+
+        moved = client.get(
+            "/api/v1/sessions", params={"date_from": "2026-10-01", "date_to": "2026-10-01"}
+        ).json()["items"]
+        assert [item["sessionId"] for item in moved] == [session.id]
+
+    def test_does_not_touch_title_or_customized_flag(self, client, db_session) -> None:
+        session = _make_session(title_customized=False)
+        db_session.add(session)
+        db_session.flush()
+
+        response = client.patch(
+            f"/api/v1/sessions/{session.id}", json={"recordedAt": "2026-10-01T01:25:05Z"}
+        )
+
+        assert response.json()["title"] == "자료구조 7주차"
+        db_session.refresh(session)
+        assert session.title_customized is False
+
+    def test_datetime_without_timezone_returns_400(self, client, db_session) -> None:
+        """시간대가 없으면 어느 날짜인지 확정할 수 없다 — 조용히 UTC로 간주하지 않는다."""
+        session = _make_session()
+        db_session.add(session)
+        db_session.flush()
+
+        response = client.patch(
+            f"/api/v1/sessions/{session.id}", json={"recordedAt": "2026-10-01T08:00:00"}
+        )
+
+        assert response.status_code == 400, response.text
+        assert response.json()["error"]["code"] == "VALIDATION_ERROR"

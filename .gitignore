@@ -12,3 +12,4 @@ data/
 
 # launchd로 관리되는 백엔드 프로세스의 stdout/stderr 로그 (com.lecturenotes.backend.plist).
 logs/
+.omc/

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import Field
+from pydantic import AwareDatetime, Field
 
 from app.schemas.common import CamelModel, UtcDateTime
 
@@ -12,6 +12,15 @@ class UpdateSessionRequest(CamelModel):
 
     title: str | None = Field(default=None, min_length=1, max_length=200)
     course: str | None = Field(default=None, max_length=100)
+    # 2026-10-07: 세션을 다른 일자로 옮긴다(업로드일 ≠ 실제 수업일 바로잡기). 시간대 없는
+    # 값은 어느 날짜인지 확정할 수 없어 거부한다 — "몇 일"인지는 사용자의 시간대가 정한다.
+    recorded_at: AwareDatetime | None = None
+
+
+class BulkExportRequest(CamelModel):
+    """POST /api/v1/sessions/export 요청 바디 (2026-10-07). 여러 세션 요약을 ZIP으로 받는다."""
+
+    session_ids: list[str] = Field(min_length=1, max_length=200)
 
 
 class UpdateSummaryRequest(CamelModel):

@@ -1,4 +1,37 @@
-# 인수인계 — `lecture-notes` (2026-08-22~09-14 연속 세션 갱신)
+# 인수인계 — `lecture-notes` (2026-08-22~10-07 연속 세션 갱신)
+
+## -8. 2026-10-07 갱신 (홈 화면 세션 다중 선택: 요약 ZIP 다운로드 + 날짜 이동)
+
+**아직 커밋 안 함.** 백엔드/프론트 모두 작업 트리에만 있음.
+
+- **배경**: 세션이 150건 넘게 쌓여, (1) 요약을 하나씩 들어가 받지 않고 여러 개를 한 번에
+  꺼내고 싶고 (2) 업로드일과 실제 수업일이 다른 세션을 실제 수업 날짜로 바로잡고 싶다는 요청.
+- **백엔드 — 날짜 이동**: 기존 `PATCH /sessions/{id}`(`UpdateSessionRequest`)에
+  `recordedAt`(시간대 포함 ISO8601, `AwareDatetime`) 추가. 시간대 없는 값은 400. UTC로
+  정규화해 `sessions.recorded_at`에 저장한다. DB 스키마 변경 없음. 제목·`title_customized`는
+  건드리지 않는다(기본 제목 "YYYY-MM-DD 수업"의 날짜도 그대로 둔다 — 의도된 결정).
+- **백엔드 — ZIP 내보내기**: `POST /api/v1/sessions/export`(신규, 바디 `{sessionIds: []}`,
+  1~200개). 세션별 요약 `.md`를 ZIP 하나로 준다. 단건 `md` 내보내기와 달리 **전사 전문은
+  넣지 않는다**(`render_markdown_export(transcript=None)`). ZIP 안에서 파일명이 겹치면
+  `이름 (2).md`로 번호를 붙인다. 없는 세션이 섞이면 `SESSION_NOT_FOUND`, 요약 없는 세션이
+  섞이면 `SUMMARY_NOT_READY`로 통째로 실패(부분 ZIP을 주지 않음).
+- **프론트(`home.ts`)**: DONE 세션 카드에만 체크박스. 하나 이상 고르면 선택 막대
+  (`#selection-bar`: N건 선택 / 요약 ZIP 다운로드 / 옮길 날짜 + 날짜 이동 / 선택 해제)가
+  뜬다. 날짜 이동은 세션마다 PATCH를 순차 호출하며, "고른 날짜 + 원래 시각"을 **브라우저
+  현지 시간대**로 계산해 보낸다(`utils/date.ts::moveIsoToLocalDate`) — UTC 날짜를 그대로
+  바꾸면 오전 9시(KST) 이전 세션이 하루 어긋난다. 실패한 세션만 선택에 남는다. 필터 변경
+  등으로 목록에서 사라진 세션은 선택에서 자동으로 빠진다.
+- **알려진 한계(기존 동작, 이번에 안 고침)**: 내보내기 파일명·`- 녹음일:` 줄과
+  `date_from`/`date_to` 필터는 여전히 **UTC 날짜** 기준이다. 오전 9시(KST) 이전에 녹음된
+  세션은 화면 그룹 날짜보다 하루 이른 날짜가 파일명에 찍힌다.
+- 테스트: 백엔드 **465 passed / 4 skipped**(신규 `tests/test_sessions_bulk_export_api.py` 9개,
+  `test_sessions_update_api.py::TestUpdateRecordedAt` 5개), 프론트 9 passed(신규
+  `utils/date.test.ts` 3개) + `tsc --noEmit` + `ruff` 클린.
+- 실브라우저 검증: 격리 인스턴스(8767 + 임시 SQLite, 프론트 5197)에 세션 4건을 시딩해
+  체크박스가 DONE에만 뜨는지, 3건 ZIP 다운로드(파일 3개·중복 이름 번호·요약만 포함), 날짜
+  미선택 시 안내, 2건 날짜 이동 후 "이전" 그룹으로 옮겨지는지까지 확인(콘솔 에러 0건).
+  **운영 DB엔 검증 데이터가 들어가지 않았다.** 검증 후 운영 백엔드를 `launchctl kickstart`로
+  재시작해 새 코드 반영(세션 151건 전부 DONE 상태에서 재시작).
 
 ## -7. 2026-09-14 추가 갱신 (요약 내용 직접 수정 + 세션 삭제 UI 연결)
 

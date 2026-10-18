@@ -27,16 +27,20 @@ def render_markdown_export(
     title: str,
     course: str | None,
     recorded_at: datetime,
-    transcript: Transcript,
+    transcript: Transcript | None,
     summary: Summary | None,
 ) -> str:
-    """`md` 포맷: 메타데이터 + 요약 + 전사 전문 (§5.3⑦, US-16)."""
+    """`md` 포맷: 메타데이터 + 요약 + 전사 전문 (§5.3⑦, US-16).
+
+    `transcript`가 `None`이면 전사 전문 섹션을 빼고 요약만 담는다 (여러 세션 ZIP 내보내기).
+    """
     lines = [f"# {title}", ""]
     lines.append(f"- 과목: {course}" if course else "- 과목: (미지정)")
     lines.append(f"- 녹음일: {recorded_at:%Y-%m-%d}")
     lines.append("")
     lines.append(summary.content_markdown if summary is not None else "*요약이 아직 없습니다.*")
-    lines += ["", "## 전사 전문", "", _transcript_text(transcript)]
+    if transcript is not None:
+        lines += ["", "## 전사 전문", "", _transcript_text(transcript)]
     return "\n".join(lines)
 
 
