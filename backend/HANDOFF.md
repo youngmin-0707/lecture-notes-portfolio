@@ -1,5 +1,22 @@
 # 인수인계 — `lecture-notes` (2026-08-22~10-07 연속 세션 갱신)
 
+## -9. 2026-10-18 갱신 (DB 백업 + 모노레포)
+
+- **저장소**: backend/frontend 개별 git 저장소를 상위 `연습장/` 하나로 합쳤다(기록 보존,
+  `git log -- backend/`). 원래 `.git` 폴더는 `~/개발/.git-backup-연습장-20261018/`에 보관.
+  `docs/record/`(원본 녹음)는 gitignore.
+- **정기 백업**: `scripts/backup_db.py` → `app/core/backup.py::backup_sqlite`. sqlite 온라인
+  백업 API + `integrity_check`. 사본은 `data/backups/`와 iCloud Drive
+  `lecture-notes-backups/`에 두고 14일 지나면 삭제. launchd `com.lecturenotes.backup`
+  (원본 `deploy/com.lecturenotes.backup.plist`, 매일 03:00, 로그 `logs/backup.*.log`).
+- **마이그레이션 전 백업**: `alembic/env.py::_backup_before_schema_change` — CLI로
+  `downgrade`는 항상, `upgrade`는 head가 아닐 때만 `-pre-migration.db` 사본을 만든다.
+  백업이 실패하면 마이그레이션도 멈춘다. 테스트처럼 `command.upgrade()`를 코드로 부르면 건너뜀.
+- **복구**: 백엔드를 멈추고(`launchctl bootout gui/$(id -u)/com.lecturenotes.backend`)
+  사본을 `data/lecture_notes.db`로 복사한 뒤 다시 띄운다.
+- **발견한 기존 버그(안 고침)**: `8f2a4c1d9b3e`(quizzes) downgrade가 SQLite에서
+  `no such index: ix_quizzes_session_id`로 실패한다.
+
 ## -8. 2026-10-07 갱신 (홈 화면 세션 다중 선택: 요약 ZIP 다운로드 + 날짜 이동)
 
 **아직 커밋 안 함.** 백엔드/프론트 모두 작업 트리에만 있음.

@@ -1,5 +1,7 @@
 from logging.config import fileConfig
 
+from alembic.runtime.migration import MigrationContext
+from alembic.script import ScriptDirectory
 from sqlalchemy import engine_from_config, pool
 
 import app.models  # noqa: E402,F401  # 모든 모델을 Base.metadata에 등록
@@ -7,6 +9,7 @@ from alembic import context
 
 # app 패키지를 import하기 위해 필요 (pyproject.toml의 pythonpath=["."]와 동일하게,
 # alembic 실행 시에도 backend/ 디렉토리가 sys.path에 포함되도록 prepend_sys_path=. 설정됨).
+from app.core.backup import backup_sqlite, sqlite_path_from_url  # noqa: E402
 from app.core.config import settings  # noqa: E402
 from app.db.base import Base  # noqa: E402
 
@@ -65,6 +68,30 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
+def _backup_before_schema_change(connection) -> None:
+    """SQLite DB의 스키마가 실제로 바뀔 예정이면 먼저 백업한다.
+
+    downgrade는 항상, upgrade는 현재 리비전이 head와 다를 때만 백업한다. `alembic current`
+    처럼 아무것도 바꾸지 않는 명령이나 PostgreSQL(테스트 하니스)에서는 건너뛴다. 백업이
+    실패하면 예외가 그대로 올라가 마이그레이션도 멈춘다 — 되돌릴 사본 없이 스키마를 바꾸지
+    않기 위함 (2026-10-18).
+    """
+    db_path = sqlite_path_from_url(config.get_main_option("sqlalchemy.url"))
+    if db_path is None or not db_path.exists():
+        return
+    cmd_opts = getattr(config, "cmd_opts", None)
+    command = getattr(getattr(cmd_opts, "cmd", (None,))[0], "__name__", None)
+    if command == "downgrade":
+        pass
+    elif command == "upgrade":
+        current = set(MigrationContext.configure(connection).get_current_heads())
+        if current == set(ScriptDirectory.from_config(config).get_heads()):
+            return
+    else:
+        return
+    backup_sqlite(db_path, reason="pre-migration")
+
+
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode.
 
@@ -79,6 +106,7 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
+        _backup_before_schema_change(connection)
         context.configure(connection=connection, target_metadata=target_metadata)
 
         with context.begin_transaction():
