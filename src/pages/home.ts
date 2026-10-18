@@ -1,14 +1,17 @@
 // 메인 화면 (T-31, US-20): 드래그앤드롭 업로드 + 최근 세션 목록 + 폴링.
 import {
   createSessionWithProgress,
+  exportSessionsZip,
   getHealth,
   listSessions,
   processSession,
+  updateSession,
   type SessionListItem,
   type UploadProgressEvent,
 } from "../api/index.ts";
 import { getUserErrorMessage } from "../errors/errorMessages.ts";
-import { el, escapeHtml } from "../utils/dom.ts";
+import { moveIsoToLocalDate } from "../utils/date.ts";
+import { downloadBlob, el, escapeHtml } from "../utils/dom.ts";
 import { formatDate, formatDuration } from "../utils/format.ts";
 import { PROCESSING_STATUSES, STATUS_LABELS } from "../utils/status.ts";
 import { renderShell } from "./shell.ts";
@@ -51,6 +54,13 @@ let visibleSessionCount = SESSION_PAGE_SIZE;
 // 직후 추가) — 기본은 "오늘"만 펼친 채로 시작한다. 폴링/재조회로 목록이 다시 그려져도
 // 이 상태는 모듈 전역이라 유지된다(펼쳐둔 그룹이 5초마다 도로 접히지 않는다).
 let expandedGroups = new Set<DateGroup>(["오늘"]);
+
+// --- 세션 다중 선택 (2026-10-07): 요약 ZIP 다운로드 + 다른 일자로 이동 ---
+// 요약이 끝난(DONE) 세션만 고를 수 있다. 값으로 `recordedAt`을 들고 있는 이유는 날짜 이동 시
+// "원래 시각은 그대로, 날짜만" 바꾸려면 원래 값이 필요해서다. 폴링/재조회로 목록이 다시
+// 그려져도 선택은 모듈 전역이라 유지된다.
+const selectedSessions = new Map<string, string>();
+let isBulkActionRunning = false;
 
 // --- T-32: 브라우저 녹음(MediaRecorder) 상태 ---
 let mediaRecorder: MediaRecorder | null = null;
@@ -113,9 +123,25 @@ function renderSessionCard(session: SessionListItem): string {
     ? `<p class="session-card__hint">자동으로 상태를 갱신하는 중...</p>`
     : "";
 
+  const selectCheckbox =
+    session.status === "DONE"
+      ? `<input
+          type="checkbox"
+          class="session-card__select"
+          data-select-id="${session.sessionId}"
+          aria-label="${escapeHtml(session.title)} 선택"
+          ${selectedSessions.has(session.sessionId) ? "checked" : ""}
+        />`
+      : "";
+
   return `
-    <li class="session-card" data-session-id="${session.sessionId}">
+    <li
+      class="session-card"
+      data-session-id="${session.sessionId}"
+      data-recorded-at="${session.recordedAt}"
+    >
       <div class="session-card__main">
+        ${selectCheckbox}
         <span class="${badgeClass}">${STATUS_LABELS[session.status]}</span>
         <a class="session-card__title" href="#/sessions/${encodeURIComponent(session.sessionId)}">
           ${escapeHtml(session.title)}
@@ -184,6 +210,17 @@ function renderSessionGroup(group: DateGroup, sessions: SessionListItem[]): stri
 function renderSessionList(sessions: SessionListItem[], hasMore: boolean): void {
   const target = el("session-list");
   if (!target) return;
+
+  // 필터 변경 등으로 목록에서 사라진 세션은 선택에서도 뺀다 — 화면에 안 보이는 세션이
+  // 일괄 동작(특히 날짜 이동)에 조용히 딸려 들어가지 않게 한다.
+  const selectableIds = new Set(
+    sessions.filter((session) => session.status === "DONE").map((session) => session.sessionId),
+  );
+  for (const sessionId of Array.from(selectedSessions.keys())) {
+    if (!selectableIds.has(sessionId)) selectedSessions.delete(sessionId);
+  }
+  updateSelectionBar();
+
   if (sessions.length === 0) {
     target.innerHTML = hasActiveFilter()
       ? `<p class="empty-state">조건에 맞는 강의가 없습니다.</p>`
@@ -214,6 +251,101 @@ function renderSessionList(sessions: SessionListItem[], hasMore: boolean): void 
     : "";
 
   target.innerHTML = groupsHtml + loadMoreHtml;
+}
+
+function setSelectionStatus(html: string): void {
+  const target = el("selection-status");
+  if (target) target.innerHTML = html;
+}
+
+/** 선택 막대(N건 선택 + 일괄 동작 버튼)를 현재 선택 상태에 맞춘다. 하나도 없으면 숨긴다. */
+function updateSelectionBar(): void {
+  const bar = el("selection-bar");
+  const count = el<"span">("selection-count");
+  if (!bar || !count) return;
+  bar.hidden = selectedSessions.size === 0;
+  count.textContent = `${selectedSessions.size}건 선택`;
+  for (const id of ["bulk-download", "bulk-move", "bulk-clear"]) {
+    const button = el<"button">(id);
+    if (button) button.disabled = isBulkActionRunning;
+  }
+}
+
+function clearSelection(): void {
+  selectedSessions.clear();
+  document
+    .querySelectorAll<HTMLInputElement>(".session-card__select")
+    .forEach((checkbox) => (checkbox.checked = false));
+  updateSelectionBar();
+}
+
+async function handleBulkDownload(generation: number): Promise<void> {
+  if (isBulkActionRunning || selectedSessions.size === 0) return;
+  isBulkActionRunning = true;
+  updateSelectionBar();
+  setSelectionStatus(`<p class="status status--loading">ZIP 파일을 만드는 중...</p>`);
+  try {
+    const result = await exportSessionsZip(Array.from(selectedSessions.keys()));
+    if (generation !== currentGeneration) return;
+    downloadBlob(result.blob, result.filename);
+    setSelectionStatus("");
+  } catch (error) {
+    if (generation !== currentGeneration) return;
+    setSelectionStatus(`<p class="status status--error">${getUserErrorMessage(error)}</p>`);
+  } finally {
+    isBulkActionRunning = false;
+    updateSelectionBar();
+  }
+}
+
+async function handleBulkMove(generation: number): Promise<void> {
+  if (isBulkActionRunning || selectedSessions.size === 0) return;
+  const dateValue = el<"input">("bulk-move-date")?.value ?? "";
+  if (!dateValue) {
+    setSelectionStatus(`<p class="status status--error">옮길 날짜를 먼저 선택하세요.</p>`);
+    return;
+  }
+
+  isBulkActionRunning = true;
+  updateSelectionBar();
+  setSelectionStatus(`<p class="status status--loading">날짜를 옮기는 중...</p>`);
+
+  // 실패한 세션만 선택에 남겨, 원인을 해결한 뒤 그대로 다시 시도할 수 있게 한다.
+  let movedCount = 0;
+  let lastError: unknown = null;
+  for (const [sessionId, recordedAt] of Array.from(selectedSessions.entries())) {
+    try {
+      await updateSession(sessionId, { recordedAt: moveIsoToLocalDate(recordedAt, dateValue) });
+      selectedSessions.delete(sessionId);
+      movedCount += 1;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  isBulkActionRunning = false;
+  if (generation !== currentGeneration) return;
+
+  const failedCount = selectedSessions.size;
+  setSelectionStatus(
+    failedCount === 0
+      ? `<p class="status status--ok">${movedCount}건을 ${escapeHtml(dateValue)}(으)로 옮겼습니다.</p>`
+      : `<p class="status status--error">${movedCount}건 이동, ${failedCount}건 실패: ${getUserErrorMessage(lastError)}</p>`,
+  );
+  await refreshSessions(generation);
+  updateSelectionBar();
+}
+
+function wireSelectionBar(generation: number): void {
+  el<"button">("bulk-download")?.addEventListener("click", () => {
+    void handleBulkDownload(generation);
+  });
+  el<"button">("bulk-move")?.addEventListener("click", () => {
+    void handleBulkMove(generation);
+  });
+  el<"button">("bulk-clear")?.addEventListener("click", () => {
+    clearSelection();
+    setSelectionStatus("");
+  });
 }
 
 function setUploadStatus(html: string): void {
@@ -536,6 +668,19 @@ function wireFilters(generation: number): void {
 function wireSessionListInteractions(generation: number): void {
   const list = el<"div">("session-list");
   if (!list) return;
+  list.addEventListener("change", (event) => {
+    const checkbox = (event.target as HTMLElement).closest<HTMLInputElement>("[data-select-id]");
+    const sessionId = checkbox?.dataset.selectId;
+    if (!checkbox || !sessionId) return;
+    const recordedAt = checkbox.closest<HTMLElement>("[data-recorded-at]")?.dataset.recordedAt;
+    if (checkbox.checked && recordedAt) {
+      selectedSessions.set(sessionId, recordedAt);
+    } else {
+      selectedSessions.delete(sessionId);
+    }
+    updateSelectionBar();
+  });
+
   list.addEventListener("click", (event) => {
     const target = event.target as HTMLElement;
 
@@ -601,6 +746,8 @@ export function renderHomePage(): void {
   filterDateTo = "";
   visibleSessionCount = SESSION_PAGE_SIZE;
   expandedGroups = new Set<DateGroup>(["오늘"]);
+  selectedSessions.clear();
+  isBulkActionRunning = false;
   if (filterDebounceId !== null) {
     window.clearTimeout(filterDebounceId);
     filterDebounceId = null;
@@ -657,6 +804,17 @@ export function renderHomePage(): void {
           </label>
           <button type="button" id="filter-reset" class="btn btn--export">초기화</button>
         </div>
+        <div id="selection-bar" class="selection-bar" hidden>
+          <span id="selection-count" class="selection-bar__count">0건 선택</span>
+          <button type="button" id="bulk-download" class="btn btn--export">요약 ZIP 다운로드</button>
+          <label class="session-filters__date-label">
+            <span>옮길 날짜</span>
+            <input type="date" id="bulk-move-date" />
+          </label>
+          <button type="button" id="bulk-move" class="btn btn--export">날짜 이동</button>
+          <button type="button" id="bulk-clear" class="btn btn--export">선택 해제</button>
+        </div>
+        <div id="selection-status"></div>
         <div id="session-list"><p class="status status--loading">불러오는 중...</p></div>
       </section>
       <div id="health-status"></div>
@@ -666,6 +824,7 @@ export function renderHomePage(): void {
   wireDropzone(generation);
   wireRecorder(generation);
   wireFilters(generation);
+  wireSelectionBar(generation);
   wireSessionListInteractions(generation);
   renderHealthWidget();
 

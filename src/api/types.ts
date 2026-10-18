@@ -287,6 +287,8 @@ export interface ListGlossaryParams {
 export interface UpdateSessionRequest {
   title?: string;
   course?: string;
+  /** 2026-10-07: 세션을 다른 일자로 옮긴다. 시간대가 포함된 ISO8601이어야 한다. */
+  recordedAt?: string;
 }
 
 /**

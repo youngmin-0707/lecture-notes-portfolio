@@ -263,6 +263,38 @@ body {
   gap: 0.5rem;
 }
 
+.session-card__select {
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+  cursor: pointer;
+}
+
+/* --- 2026-10-07: 세션 다중 선택 막대 (ZIP 다운로드 / 날짜 이동) --- */
+
+.selection-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.75rem 0 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #c9d8ff;
+  border-radius: 8px;
+  background: #f2f6ff;
+}
+
+.selection-bar[hidden] {
+  display: none;
+}
+
+.selection-bar__count {
+  margin-right: auto;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #1a1a1a;
+}
+
 .session-card__title {
   font-weight: 600;
   color: #1a1a1a;

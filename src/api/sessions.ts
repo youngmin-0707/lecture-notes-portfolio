@@ -193,6 +193,20 @@ export async function exportSession(
   };
 }
 
+/** POST /api/v1/sessions/export — 여러 세션 요약을 ZIP 하나로 내보내기 (2026-10-07) */
+export async function exportSessionsZip(sessionIds: string[]): Promise<ExportResult> {
+  const { blob, response } = await requestBlob("/sessions/export", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionIds }),
+  });
+  return {
+    blob,
+    filename: parseFilenameFromContentDisposition(response.headers.get("Content-Disposition")),
+    contentType: response.headers.get("Content-Type") ?? "application/zip",
+  };
+}
+
 /**
  * GET /api/v1/sessions/{id}/audio — 원본 오디오 스트리밍 URL (T-33).
  *

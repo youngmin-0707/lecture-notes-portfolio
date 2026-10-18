@@ -17,7 +17,7 @@ import {
 } from "../api/index.ts";
 import { getUserErrorMessage } from "../errors/errorMessages.ts";
 import { navigate, type RouteParams } from "../router/router.ts";
-import { el, escapeHtml } from "../utils/dom.ts";
+import { downloadBlob, el, escapeHtml } from "../utils/dom.ts";
 import { formatDate, formatDuration, formatTimestamp } from "../utils/format.ts";
 import { renderMarkdown } from "../utils/markdown.ts";
 import { PROCESSING_STATUSES, STATUS_LABELS } from "../utils/status.ts";
@@ -367,14 +367,7 @@ async function handleExport(sessionId: string, format: ExportFormat): Promise<vo
   setExportStatus(`<p class="status status--loading">내보내는 중...</p>`);
   try {
     const result = await exportSession(sessionId, format);
-    const url = URL.createObjectURL(result.blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = result.filename;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
+    downloadBlob(result.blob, result.filename);
     setExportStatus("");
   } catch (error) {
     setExportStatus(`<p class="status status--error">${getUserErrorMessage(error)}</p>`);
