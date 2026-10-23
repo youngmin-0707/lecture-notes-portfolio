@@ -2,6 +2,7 @@
 
 - 모델 `large-v3-turbo`, 언어 `ko` 고정 (§0 D10, `settings.STT_LANGUAGE`를 통해 전달받음)
 - VAD 활성화 (§3.2 — 강의 중 침묵이 길어 처리 시간을 크게 줄인다)
+- **전사마다 자식 프로세스 격리** (`isolate_process=True`, 서버 기본값): 대기 중 메모리 상주를 없앤다.
 - **지연 로딩 + 프로세스 내 캐시**: 모델은 최초 `transcribe()` 호출 시점에 한 번만 로드되고
   이후 호출은 모듈 레벨 캐시에 있는 동일 인스턴스를 재사용한다 (§3.2 "매 요청 재로딩 금지").
 - 모델은 `download_root=<settings.MODEL_CACHE_DIR>`에 캐시된다 (최초 1회 다운로드, §3.2).
@@ -15,8 +16,11 @@
 from __future__ import annotations
 
 import logging
+import multiprocessing
+import queue
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -97,6 +101,7 @@ class LocalWhisperSttProvider(SttProvider):
         compute_type: str = "int8",
         download_root: str | None = None,
         vad_filter: bool = True,
+        isolate_process: bool = False,
     ) -> None:
         # 참고: CTranslate2는 Apple Silicon GPU(Metal)를 지원하지 않아 macOS에서는
         # device="cpu"가 사실상 유일한 선택지다. compute_type="int8"은 CPU에서
@@ -106,6 +111,7 @@ class LocalWhisperSttProvider(SttProvider):
         self._compute_type = compute_type
         self._download_root = download_root or settings.MODEL_CACHE_DIR
         self._vad_filter = vad_filter
+        self._isolate_process = isolate_process
 
     @property
     def provider_name(self) -> str:
@@ -123,35 +129,113 @@ class LocalWhisperSttProvider(SttProvider):
         initial_prompt: str | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> SttTranscriptionResult:
-        model = _load_model(self._model_size, self._device, self._compute_type, self._download_root)
-
-        started_at = time.monotonic()
-        try:
-            segments_iter, info = model.transcribe(
-                str(audio_path),
-                language=language,
-                initial_prompt=initial_prompt,
-                vad_filter=self._vad_filter,
-            )
-
-            segments: list[SttSegment] = []
-            texts: list[str] = []
-            duration = info.duration or 0.0
-            for raw_segment in segments_iter:
-                text = raw_segment.text.strip()
-                segments.append(SttSegment(start=raw_segment.start, end=raw_segment.end, text=text))
-                texts.append(text)
-                if progress_callback is not None:
-                    progress_callback(raw_segment.end, duration)
-        except AppError:
-            raise
-        except Exception as exc:  # noqa: BLE001 — 디코딩/추론 오류는 모두 전사 실패로 취급한다.
-            raise AppError("STT_FAILED") from exc
-
-        elapsed_seconds = time.monotonic() - started_at
-        return SttTranscriptionResult(
-            text=" ".join(t for t in texts if t),
-            segments=segments,
-            elapsed_seconds=elapsed_seconds,
-            language=info.language or language,
+        job = _TranscribeJob(
+            model_size=self._model_size,
+            device=self._device,
+            compute_type=self._compute_type,
+            download_root=self._download_root,
+            vad_filter=self._vad_filter,
+            audio_path=str(audio_path),
+            language=language,
+            initial_prompt=initial_prompt,
         )
+        if self._isolate_process:
+            return _transcribe_in_subprocess(job, progress_callback)
+        return _run_transcription(job, progress_callback)
+
+
+@dataclass(frozen=True)
+class _TranscribeJob:
+    model_size: str
+    device: str
+    compute_type: str
+    download_root: str
+    vad_filter: bool
+    audio_path: str
+    language: str
+    initial_prompt: str | None
+
+
+def _run_transcription(job: _TranscribeJob, progress_callback: ProgressCallback | None) -> SttTranscriptionResult:
+    model = _load_model(job.model_size, job.device, job.compute_type, job.download_root)
+
+    started_at = time.monotonic()
+    try:
+        segments_iter, info = model.transcribe(
+            job.audio_path,
+            language=job.language,
+            initial_prompt=job.initial_prompt,
+            vad_filter=job.vad_filter,
+        )
+
+        segments: list[SttSegment] = []
+        texts: list[str] = []
+        duration = info.duration or 0.0
+        for raw_segment in segments_iter:
+            text = raw_segment.text.strip()
+            segments.append(SttSegment(start=raw_segment.start, end=raw_segment.end, text=text))
+            texts.append(text)
+            if progress_callback is not None:
+                progress_callback(raw_segment.end, duration)
+    except AppError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — 디코딩/추론 오류는 모두 전사 실패로 취급한다.
+        raise AppError("STT_FAILED") from exc
+
+    elapsed_seconds = time.monotonic() - started_at
+    return SttTranscriptionResult(
+        text=" ".join(t for t in texts if t),
+        segments=segments,
+        elapsed_seconds=elapsed_seconds,
+        language=info.language or job.language,
+    )
+
+
+# --- 자식 프로세스 격리 (2026-10-23) ---
+# 모델(약 1GB)을 서버 프로세스에 상주시키면 전사가 없는 대기 시간에도 메모리를 계속 차지하고,
+# macOS에서는 해제해도 OS로 잘 반환되지 않는다. 전사 1건마다 `spawn` 자식 프로세스에서 모델을
+# 로드·추론하고 종료시켜 메모리를 OS에 완전히 돌려준다. 대가는 전사당 모델 로딩 수 초.
+
+
+def _subprocess_entry(job: _TranscribeJob, events: Any) -> None:
+    try:
+        result = _run_transcription(job, lambda current, total: events.put(("progress", current, total)))
+        events.put(("result", result))
+    except AppError as exc:
+        events.put(("error", exc.code))
+    except BaseException:  # noqa: BLE001 — 자식에서 난 예상 밖 오류도 전사 실패로 전달한다.
+        events.put(("error", "STT_FAILED"))
+
+
+def _transcribe_in_subprocess(
+    job: _TranscribeJob,
+    progress_callback: ProgressCallback | None,
+    entry: Any = None,
+) -> SttTranscriptionResult:
+    ctx = multiprocessing.get_context("spawn")
+    events = ctx.Queue()
+    process = ctx.Process(target=entry or _subprocess_entry, args=(job, events), daemon=True)
+    process.start()
+    try:
+        while True:
+            try:
+                event = events.get(timeout=1.0)
+            except queue.Empty:
+                if not process.is_alive():
+                    logger.error("STT worker exited unexpectedly: exitcode=%s", process.exitcode)
+                    raise AppError("STT_FAILED") from None
+                continue
+            kind = event[0]
+            if kind == "progress":
+                if progress_callback is not None:
+                    progress_callback(event[1], event[2])
+            elif kind == "result":
+                return event[1]
+            else:
+                raise AppError(event[1])
+    finally:
+        process.join(timeout=10)
+        if process.is_alive():
+            process.kill()
+            process.join()
+        events.close()
