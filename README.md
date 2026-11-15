@@ -33,26 +33,25 @@
 
 ## 화면
 
-### ① 홈 — 강의 올리기 · 목록
-![홈 화면: 업로드와 강의 목록](docs/images/screen-home.png)
+<table>
+<tr>
+<th width="33%">① 홈 — 올리기 · 목록</th>
+<th width="33%">② 요약 — 정리 노트</th>
+<th width="33%">③ 복습 — 복습 문제</th>
+</tr>
+<tr>
+<td valign="top"><a href="docs/images/screen-home.png"><img src="docs/images/screen-home.png" width="100%" alt="홈 화면: 업로드와 강의 목록"></a></td>
+<td valign="top"><a href="docs/images/screen-summary.png"><img src="docs/images/screen-summary.png" width="100%" alt="요약 화면: 한 줄 요약과 정리 본문"></a></td>
+<td valign="top"><a href="docs/images/screen-review.png"><img src="docs/images/screen-review.png" width="100%" alt="복습 화면: 강의 내용으로 만든 복습 문제"></a></td>
+</tr>
+<tr>
+<td valign="top">파일을 끌어다 놓거나 <b>바로 녹음</b>. 강의마다 AI가 붙인 제목 · 녹음 길이 · 한 줄 요약이 보이고, 검색 · 날짜 필터 · 여러 개 내보내기 지원</td>
+<td valign="top"><b>한 줄 요약 → 핵심 주제 → 정리 본문</b>. 본문은 강의에 맞게 AI가 구성하고 직접 수정 가능. 전사 탭에서 원문을 시각과 함께 확인</td>
+<td valign="top">강의 내용으로 만든 <b>복습 문제 5개</b>. 스스로 답해 본 뒤 정답 보기로 확인하고, 필요하면 다시 생성</td>
+</tr>
+</table>
 
-> 녹음 파일이나 텍스트 파일을 끌어다 놓거나, **녹음 시작** 버튼으로 바로 녹음합니다.  
-> 아래 목록은 이번 주 · 이번 달로 묶이고, 강의마다 AI가 붙인 **제목 · 녹음 길이 · 한 줄 요약**이 보입니다. 검색과 날짜 필터, 여러 개를 골라 한꺼번에 내보내기도 됩니다.
-
-<br>
-
-### ② 요약 — 강의 정리 노트
-![요약 화면: 한 줄 요약과 정리 본문](docs/images/screen-summary.png)
-
-> **한 줄 요약 → 핵심 주제 → 정리 본문** 순서로 보여 줍니다. 본문은 강의 내용에 맞게 AI가 구성하고(코드 블록 · 💡 설명 포함), **수정** 버튼으로 직접 고칠 수 있습니다.  
-> **전사** 탭에서는 받아쓴 원문을 시각과 함께 볼 수 있고, MD · TXT로 내려받을 수 있습니다.
-
-<br>
-
-### ③ 복습 — 복습 문제
-![복습 화면: 강의 내용으로 만든 복습 문제](docs/images/screen-review.png)
-
-> 강의 내용으로 만든 복습 문제 5개입니다. 먼저 스스로 답해 본 뒤 **정답 보기**로 확인하고, 마음에 들지 않으면 **다시 생성**합니다.
+> 이미지를 누르면 크게 볼 수 있습니다.
 
 <br>
 
