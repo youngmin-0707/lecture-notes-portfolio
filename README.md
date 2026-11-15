@@ -1,7 +1,7 @@
 # lecture-notes · 강의 녹음 → 받아쓰기 → 요약 · 복습 퀴즈
 
-> 수업 녹음을 올리면 **내 맥에서** 받아쓰고, 요약과 복습 문제까지 만들어 주는 개인 학습 도구  
-> 혼자 쓰려고 만든 첫 풀스택 프로젝트 · AI 코딩 도구(Claude Code)와 함께 만듦 · 2026.08 ~ 운영 중
+> 수업 녹음을 올리면 **내 맥에서** 받아쓰고, 요약과 복습 문제까지 만들어 주는 개인 학습 도구입니다.  
+> 개인사용 목적으로 만든 첫 풀스택 프로젝트 · AI 코딩 도구(Claude Code)와 함께 만듦 · 2026.08 ~ 운영 중
 
 > **문제** · AI 캠퍼스에서 하루 8시간 수업을 들으며, 놓친 내용을 확인하고 복습할 방법이 필요했음  
 > **판단** · 녹음(개인정보)은 내 맥 밖으로 내보내지 않고, 요약만 클라우드 AI에 맡김  
@@ -66,7 +66,7 @@
 | 백엔드 | Python · FastAPI · SQLAlchemy · Alembic · SQLite |
 | 받아쓰기 | faster-whisper `large-v3-turbo` (내 맥, 오프라인) |
 | 요약 · 문제 | OpenAI Responses API (structured outputs) |
-| 프론트 | TypeScript · Vite (프레임워크 없이) |
+| 프론트 | TypeScript · Vite (React 프레임워크 없이,화면 4개) |
 | 테스트 | pytest · Vitest · Playwright |
 | 운영 | macOS launchd (자동 시작 · 재시작) · 매일 DB 백업 · Tailscale (내 기기에서만 원격 접속) |
 
