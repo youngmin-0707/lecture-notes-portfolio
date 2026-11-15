@@ -10,6 +10,27 @@
 
 <br>
 
+## 기술
+
+| 구분 | 사용 |
+| --- | --- |
+| 백엔드 | Python · FastAPI · SQLAlchemy · Alembic · SQLite |
+| 받아쓰기 | faster-whisper `large-v3-turbo` (내 맥, 오프라인) |
+| 요약 · 문제 | OpenAI Responses API (structured outputs) |
+| 프론트 | TypeScript · Vite (React 프레임워크 없이,화면 4개) |
+| 테스트 | pytest · Vitest · Playwright |
+| 운영 | macOS launchd (자동 시작 · 재시작) · 매일 DB 백업 · Tailscale (내 기기에서만 원격 접속) |
+
+<br>
+
+## 흐름 한눈에
+
+![업로드부터 요약까지의 처리 흐름](docs/images/flow.png)
+
+> 녹음은 내 맥에서만 받아쓰고, 요약할 때는 받아쓴 **글자만** OpenAI로 보냅니다. 텍스트 파일을 올리면 ②~③(받아쓰기)을 건너뛰고 용어집 보정 후 바로 요약합니다.
+
+<br>
+
 ## 실제 사용 기록
 
 앱 DB에 쌓인 기록을 그대로 집계한 숫자입니다. (2026-08-22 ~ 11-10)
@@ -24,14 +45,6 @@
 
 <br>
 
-## 흐름 한눈에
-
-![업로드부터 요약까지의 처리 흐름](docs/images/flow.png)
-
-> 녹음은 내 맥에서만 받아쓰고, 요약할 때는 받아쓴 **글자만** OpenAI로 보냅니다. 텍스트 파일을 올리면 ②~③(받아쓰기)을 건너뛰고 용어집 보정 후 바로 요약합니다.
-
-<br>
-
 ## 직접 써 보면서 내린 판단
 
 기능 목록보다, **써 보다가 무엇이 불편했고 어떻게 바꿨는지**가 이 프로젝트의 핵심입니다.
@@ -43,19 +56,6 @@
 | 요약이 1~2분씩 걸려 이상해서 조사 → 긴 강의를 필요 없이 2~3번에 나눠 보내고 있었음 | 모델이 한 번에 받을 수 있는 길이를 공식 문서로 확인하고, AI 종류별로 나누는 크기를 따로 설정 | 긴 강의도 한 번에 요약 |
 | "복습 키워드" 칸을 실제로 거의 안 봄 | 만든 기능이라도 **제거** | 화면이 단순해짐 |
 | 오디오 다시 듣기를 거의 안 씀 | 요약이 끝나면 원본 녹음 자동 삭제 (설정으로 끌 수 있음) | 디스크 사용량 · 개인정보 부담 감소 |
-
-<br>
-
-## 기술
-
-| 구분 | 사용 |
-| --- | --- |
-| 백엔드 | Python · FastAPI · SQLAlchemy · Alembic · SQLite |
-| 받아쓰기 | faster-whisper `large-v3-turbo` (내 맥, 오프라인) |
-| 요약 · 문제 | OpenAI Responses API (structured outputs) |
-| 프론트 | TypeScript · Vite (React 프레임워크 없이,화면 4개) |
-| 테스트 | pytest · Vitest · Playwright |
-| 운영 | macOS launchd (자동 시작 · 재시작) · 매일 DB 백업 · Tailscale (내 기기에서만 원격 접속) |
 
 <br>
 
