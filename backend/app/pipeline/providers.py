@@ -24,7 +24,7 @@ def build_stt_provider(model: str | None = None) -> SttProvider:
             "STT_MODEL_UNAVAILABLE",
             message=f"지원하지 않는 STT provider입니다: {provider_name}",
         )
-    return LocalWhisperSttProvider(model_size=model)
+    return LocalWhisperSttProvider(model_size=model, isolate_process=True)
 
 
 def build_llm_provider(name: str | None = None) -> LlmProvider:
